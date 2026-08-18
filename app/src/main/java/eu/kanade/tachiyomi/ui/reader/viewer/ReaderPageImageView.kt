@@ -133,6 +133,21 @@ open class ReaderPageImageView @JvmOverloads constructor(
             panelSpotlight?.opacityPercent = value
         }
 
+    /** Debug aid: outlines every detected panel with its reading-order number, toggled from settings. */
+    var panelShowDebugOrder: Boolean = false
+        set(value) {
+            field = value
+            panelSpotlight?.debugStops = if (value) panelStops.excludingFullPageStops() else null
+        }
+
+    /**
+     * The intro/outro full-page reveal stops aren't real panels — excluding them from the debug
+     * overlay keeps its numbering matching the actual detected/planned panels, instead of being
+     * offset by one (or two) for whichever bracketing reveals are enabled.
+     */
+    private fun List<PanelRect>.excludingFullPageStops(): List<PanelRect> =
+        filterNot { it.width >= FULL_PAGE_DEBUG_THRESHOLD && it.height >= FULL_PAGE_DEBUG_THRESHOLD }
+
     private fun spotlightFor(view: SubsamplingScaleImageView): PanelSpotlightOverlay {
         panelSpotlight?.let { return it }
         val overlay = PanelSpotlightOverlay(context).also {
@@ -153,7 +168,21 @@ open class ReaderPageImageView @JvmOverloads constructor(
 
     open fun onPageSelected(forward: Boolean) {
         panelStopsEnterForward = forward
-        if (panelModeActive) return
+        if (panelModeActive) {
+            // setPanelStops() only ever runs once per holder, the first time its page's image
+            // loads — so on a revisit (the holder was never destroyed, panels are already known)
+            // this is the only signal that the page is being (re-)entered. Without resetting here,
+            // the stop index stays wherever advancing/retreating last left it instead of the
+            // boundary stop matching how it's being entered now.
+            if (panelStops.isNotEmpty()) {
+                panelStopIndex = if (forward) 0 else panelStops.lastIndex
+                userMovedAwayFromStop = false
+                (pageView as? SubsamplingScaleImageView)?.let { spotlightFor(it).alpha = 1f }
+                jumpToPanelStop(panelStopIndex)
+                onPanelStopChanged?.invoke(panelStopIndex)
+            }
+            return
+        }
         with(pageView as? SubsamplingScaleImageView) {
             if (this == null) return
             if (isReady) {
@@ -194,7 +223,11 @@ open class ReaderPageImageView @JvmOverloads constructor(
         panelStopIndexOverride = null
         userMovedAwayFromStop = false
         if (panelModeActive) {
-            (pageView as? SubsamplingScaleImageView)?.let { spotlightFor(it).alpha = 1f }
+            (pageView as? SubsamplingScaleImageView)?.let {
+                val overlay = spotlightFor(it)
+                overlay.alpha = 1f
+                if (panelShowDebugOrder) overlay.debugStops = panelStops.excludingFullPageStops()
+            }
         }
         jumpToPanelStop(panelStopIndex)
         onPanelStopChanged?.invoke(panelStopIndex)
@@ -640,3 +673,4 @@ open class ReaderPageImageView @JvmOverloads constructor(
 
 private const val MAX_ZOOM_SCALE = 5F
 private const val SPOTLIGHT_FADE_MS = 150L
+private const val FULL_PAGE_DEBUG_THRESHOLD = 0.98f

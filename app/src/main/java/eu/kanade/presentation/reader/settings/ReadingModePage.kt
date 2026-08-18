@@ -1,6 +1,8 @@
 package eu.kanade.presentation.reader.settings
 
 import androidx.compose.foundation.layout.ColumnScope
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.outlined.DeleteSweep
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
@@ -8,6 +10,7 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.collectAsState
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
 import eu.kanade.domain.manga.model.readerOrientation
 import eu.kanade.domain.manga.model.readingMode
@@ -18,10 +21,13 @@ import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
 import eu.kanade.tachiyomi.ui.reader.viewer.pager.PanelByPanelViewer
 import eu.kanade.tachiyomi.ui.reader.viewer.webgpu.WebGpuViewer
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonViewer
+import eu.kanade.tachiyomi.util.system.toast
+import kotlinx.coroutines.launch
 import mihon.app.di.appGraph
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.components.CheckboxItem
 import tachiyomi.presentation.core.components.HeadingItem
+import tachiyomi.presentation.core.components.IconItem
 import tachiyomi.presentation.core.components.SettingsChipRow
 import tachiyomi.presentation.core.components.SliderItem
 import tachiyomi.presentation.core.i18n.stringResource
@@ -133,6 +139,24 @@ private fun ColumnScope.PanelByPanelViewerSettings(
             onShowMenus()
         },
         pillColor = MaterialTheme.colorScheme.surfaceContainerHighest,
+    )
+
+    CheckboxItem(
+        label = stringResource(MR.strings.pref_panel_by_panel_show_debug_order),
+        pref = viewModel.preferences.panelByPanelShowDebugOrder,
+    )
+
+    val context = LocalContext.current
+    val scope = rememberCoroutineScope()
+    IconItem(
+        label = stringResource(MR.strings.action_clear_panel_cache),
+        icon = Icons.Outlined.DeleteSweep,
+        onClick = {
+            scope.launch {
+                context.appGraph.panelCacheRepository.clearAll()
+                context.toast(MR.strings.panel_cache_cleared)
+            }
+        },
     )
 }
 

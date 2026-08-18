@@ -28,3 +28,6 @@ SET
     detector_version = :detectorVersion,
     panels_json = :panelsJson,
     detected_at = :detectedAt;
+
+deleteAll:
+DELETE FROM panel_cache;

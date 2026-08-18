@@ -12,6 +12,17 @@ package eu.kanade.tachiyomi.ui.reader.viewer.panel
  * splits into one row. A panel that genuinely spans two rows (a tall panel beside stacked ones) makes
  * the horizontal cut impossible, so we cut vertically first — separating the tall panel from the
  * stack — then recurse, which is exactly the case a naive "group by row overlap" gets wrong.
+ *
+ * On a double-page spread ([isSpread]), the two pages are otherwise-unrelated layouts that just
+ * happen to sit in one merged image — a panel near the top of the right page and one near the top
+ * of the left page are *not* "the same row" just because their Y-ranges overlap. Cutting the whole
+ * spread with the general algorithm above lets exactly that coincidence pull a horizontal cut across
+ * both pages, interleaving them (right page panel, right page panel, left page panel, back to a
+ * right page panel, ...) instead of finishing one page before starting the other. So a spread is
+ * split at the page seam *first* (detected from the actual panel layout — see [spreadSeam] — not
+ * assumed to be the image's exact midpoint, since stitched pages aren't always equal width), each
+ * half is ordered independently, and the halves are then concatenated in reading order (right page
+ * fully, then left page, for manga).
  */
 object PanelOrdering {
 
@@ -23,9 +34,51 @@ object PanelOrdering {
      *  are treated as one row (so a vertically-staggered row still reads left→right). */
     private const val ROW_BAND = 0.12f
 
-    fun order(panels: List<PanelRect>, rightToLeft: Boolean = false): List<PanelRect> {
+    /** A seam gap narrower than this fraction of the page width is treated as noise, not a real seam. */
+    private const val MIN_SEAM_GAP = 0.01f
+
+    fun order(panels: List<PanelRect>, rightToLeft: Boolean = false, isSpread: Boolean = false): List<PanelRect> {
         if (panels.size <= 1) return panels
+        if (isSpread) {
+            val seam = spreadSeam(panels)
+            if (seam != null) {
+                val rightHalf = panels.filter { it.centerX >= seam }
+                val leftHalf = panels.filter { it.centerX < seam }
+                if (rightHalf.isNotEmpty() && leftHalf.isNotEmpty()) {
+                    val first = if (rightToLeft) rightHalf else leftHalf
+                    val second = if (rightToLeft) leftHalf else rightHalf
+                    return cut(first, rightToLeft) + cut(second, rightToLeft)
+                }
+            }
+        }
         return cut(panels, rightToLeft)
+    }
+
+    /**
+     * Finds where the two pages meet in a merged spread image. Pages in a stitched spread aren't
+     * necessarily equal width, so the seam isn't reliably at the image's exact horizontal midpoint —
+     * this looks at the actual panel layout instead: merge every panel's horizontal span into
+     * clusters of overlapping/touching panels, then return the midpoint of the widest gap between
+     * clusters (the real page-to-page gap is normally much wider than any gap between panels on the
+     * same page). Returns null if the panels don't separate into clusters with a meaningful gap.
+     */
+    private fun spreadSeam(panels: List<PanelRect>): Float? {
+        val spans = panels.map { it.left to it.right }.sortedBy { it.first }
+        var clusterEnd = spans.first().second
+        var bestGapMid: Float? = null
+        var bestGapSize = MIN_SEAM_GAP
+        for (i in 1 until spans.size) {
+            val (start, end) = spans[i]
+            if (start > clusterEnd) {
+                val gap = start - clusterEnd
+                if (gap > bestGapSize) {
+                    bestGapSize = gap
+                    bestGapMid = (clusterEnd + start) / 2f
+                }
+            }
+            clusterEnd = maxOf(clusterEnd, end)
+        }
+        return bestGapMid
     }
 
     private fun cut(panels: List<PanelRect>, rightToLeft: Boolean): List<PanelRect> {

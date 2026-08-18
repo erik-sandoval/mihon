@@ -90,6 +90,12 @@ class ReaderPreferences(
         65,
     )
 
+    /** Debug aid: outlines every detected panel with its reading-order number. */
+    val panelByPanelShowDebugOrder: Preference<Boolean> = preferenceStore.getBoolean(
+        "pref_panel_by_panel_show_debug_order",
+        false,
+    )
+
     val defaultOrientationType: Preference<Int> = preferenceStore.getInt(
         "pref_default_orientation_type_key",
         ReaderOrientation.FREE.flagValue,

@@ -33,4 +33,8 @@ class PanelCacheRepository(
             detectedAt = System.currentTimeMillis(),
         )
     }
+
+    suspend fun clearAll() {
+        database.panel_cacheQueries.deleteAll()
+    }
 }

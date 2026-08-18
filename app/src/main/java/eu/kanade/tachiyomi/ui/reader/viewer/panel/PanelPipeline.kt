@@ -22,6 +22,9 @@ object PanelPipeline {
      */
     private const val BUBBLE_CLEARANCE = 0.06f
 
+    /** Image aspect (w/h) at or above which a page is treated as a double-page spread. */
+    private const val SPREAD_ASPECT_MIN = 1.15f
+
     fun zoomRegions(
         panels: List<PanelRect>,
         bubbles: List<PanelRect>,
@@ -34,8 +37,9 @@ object PanelPipeline {
         // Manga (read right-to-left) is paced panel-by-panel, so it uses a profile that merges far
         // less aggressively; Western LTR comics keep the default grid-friendly merging.
         val config = if (rightToLeft) PanelPlanner.Config.MANGA else PanelPlanner.Config()
+        val isSpread = pageW.toFloat() / pageH.toFloat() >= SPREAD_ASPECT_MIN
         val filled = PanelGapFiller.fill(panels)
-        val ordered = PanelOrdering.order(filled, rightToLeft)
+        val ordered = PanelOrdering.order(filled, rightToLeft, isSpread)
         val planned = PanelPlanner.plan(ordered, bubbles, pageW, pageH, rightToLeft, config)
         if (planned.size >= 2) return pad(planned, bubbles)
         // Detection found too little to work with (nothing, or one region covering most of the

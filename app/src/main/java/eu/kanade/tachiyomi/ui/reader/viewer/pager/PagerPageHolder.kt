@@ -89,6 +89,9 @@ class PagerPageHolder(
      */
     private var directionJob: Job? = null
 
+    /** Job keeping the debug panel-order overlay in sync with the user's setting, for the same reason as [opacityJob]. */
+    private var debugOrderJob: Job? = null
+
     /** The raw detected panels for this page, cached here so intro/outro toggles can be reapplied without re-detecting. */
     private var detectedPanels: List<Panel>? = null
 
@@ -107,6 +110,12 @@ class PagerPageHolder(
             opacityJob = scope.launch {
                 viewer.readerPreferences.panelByPanelOverlayOpacity.changes().collectLatest {
                     panelOverlayOpacityPercent = it
+                }
+            }
+            panelShowDebugOrder = viewer.readerPreferences.panelByPanelShowDebugOrder.get()
+            debugOrderJob = scope.launch {
+                viewer.readerPreferences.panelByPanelShowDebugOrder.changes().collectLatest {
+                    panelShowDebugOrder = it
                 }
             }
             introOutroJob = scope.launch {
@@ -158,6 +167,8 @@ class PagerPageHolder(
         introOutroJob = null
         directionJob?.cancel()
         directionJob = null
+        debugOrderJob?.cancel()
+        debugOrderJob = null
     }
 
     private fun initProgressIndicator() {
