@@ -21,6 +21,17 @@ class PanelByPanelViewer(activity: ReaderActivity) : PagerViewer(activity) {
     val panelDirection: PanelDirection
         get() = if (readerPreferences.panelByPanelRightToLeft.get()) PanelDirection.RTL else PanelDirection.LTR
 
+    /**
+     * Direction of the most recent real page transition. [PagerPageHolder] seeds a freshly
+     * created page's entry stop (first vs last) from this at construction time, since
+     * [ViewPager][androidx.viewpager.widget.ViewPager]'s offscreen prefetching creates a page's
+     * holder — and runs its panel detection/entry-stop selection — before the user actually
+     * swipes onto it. Without this, holders created ahead of the user while continuously
+     * navigating backward would fall back to the "enter forward" default and always land on the
+     * first panel instead of the last.
+     */
+    var lastNavigationForward: Boolean = true
+
     override fun createPager(): Pager = Pager(activity)
 
     override fun destroy() {

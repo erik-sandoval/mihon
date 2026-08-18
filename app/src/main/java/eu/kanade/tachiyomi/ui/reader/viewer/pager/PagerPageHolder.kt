@@ -98,6 +98,11 @@ class PagerPageHolder(
     init {
         if (viewer is PanelByPanelViewer) {
             panelModeActive = true
+            // Seed the entry stop from the most recent real navigation direction, since ViewPager
+            // prefetches an offscreen neighbor's holder (and its panel detection) before the user
+            // actually swipes onto it — the "enter forward" default would otherwise win the race
+            // and land on the first panel even while the user is navigating backward.
+            onPageSelected(viewer.lastNavigationForward)
             panelOverlayOpacityPercent = viewer.readerPreferences.panelByPanelOverlayOpacity.get()
             opacityJob = scope.launch {
                 viewer.readerPreferences.panelByPanelOverlayOpacity.changes().collectLatest {

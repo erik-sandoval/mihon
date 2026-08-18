@@ -228,6 +228,8 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         logcat { "onReaderPageSelected: ${page.number}/${pages.size}" }
         activity.onPageSelected(page)
 
+        if (this is PanelByPanelViewer) lastNavigationForward = forward
+
         // Notify holder of page change
         getPageHolder(page)?.onPageSelected(forward)
 
