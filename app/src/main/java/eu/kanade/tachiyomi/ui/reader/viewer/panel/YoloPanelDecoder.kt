@@ -46,6 +46,7 @@ class YoloPanelDecoder(
     private val nmsIoU: Float = DEFAULT_NMS_IOU,
     private val containmentThreshold: Float = DEFAULT_CONTAINMENT,
     private val minAreaFraction: Float = DEFAULT_MIN_AREA_FRACTION,
+    private val minSideFraction: Float = DEFAULT_MIN_SIDE_FRACTION,
 ) {
 
     fun decode(raw: FloatArray, shape: IntArray, lb: Letterbox, pageW: Int, pageH: Int): DetectResult {
@@ -99,8 +100,8 @@ class YoloPanelDecoder(
         }
 
         // Suppress overlapping/nested duplicates within each class.
-        val panels = toPanels(suppress(panelBoxes), lb, pageW, pageH, minAreaFraction)
-        val bubbles = toPanels(suppress(bubbleBoxes), lb, pageW, pageH, 0f)
+        val panels = toPanels(suppress(panelBoxes), lb, pageW, pageH, minAreaFraction, minSideFraction)
+        val bubbles = toPanels(suppress(bubbleBoxes), lb, pageW, pageH, 0f, 0f)
         return DetectResult(panels, bubbles, pageW, pageH)
     }
 
@@ -111,9 +112,10 @@ class YoloPanelDecoder(
         pageW: Int,
         pageH: Int,
         minAreaFrac: Float,
+        minSideFrac: Float,
     ): List<PanelRect> {
         val minArea = minAreaFrac * inputSize * inputSize
-        return boxes.mapNotNull { box ->
+        val rects = boxes.mapNotNull { box ->
             val w = (box[2] - box[0]).coerceAtLeast(0f)
             val h = (box[3] - box[1]).coerceAtLeast(0f)
             if (w * h < minArea) return@mapNotNull null
@@ -121,9 +123,72 @@ class YoloPanelDecoder(
             val t = ((box[1] - lb.padY) / lb.scale / pageH).coerceIn(0f, 1f)
             val r = ((box[2] - lb.padX) / lb.scale / pageW).coerceIn(0f, 1f)
             val bo = ((box[3] - lb.padY) / lb.scale / pageH).coerceIn(0f, 1f)
-            if (r > l && bo > t) PanelRect(l, t, r, bo) else null
+            if (r <= l || bo <= t) return@mapNotNull null
+            PanelRect(l, t, r, bo)
+        }
+        if (minSideFrac <= 0f) return rects
+        return mergeSlivers(rects, minSideFrac)
+    }
+
+    /**
+     * A real panel is essentially never this thin — a box narrower than [minSideFrac] along either
+     * axis is almost always a secondary false-positive detection running along a real panel's edge,
+     * one that survives NMS because it isn't >60% contained within the real panel (it pokes slightly
+     * past its border), so containment-based suppression alone doesn't catch it. That sliver's area is
+     * still real page content though — usually a thin strip of the panel it's sitting against that the
+     * real detection just under-shot — so fold it into whichever kept panel it belongs to (see
+     * [bestHost]), rather than throwing that area away. Every sliver merges into some panel as long as
+     * the page has at least one — there's no "too far to bother" cutoff, since a dropped sliver is
+     * literally unaccounted-for page content, worse than a slightly-imprecise merge.
+     */
+    private fun mergeSlivers(rects: List<PanelRect>, minSideFrac: Float): List<PanelRect> {
+        val (slivers, real) = rects.partition { it.width < minSideFrac || it.height < minSideFrac }
+        if (slivers.isEmpty()) return real
+        if (real.isEmpty()) return emptyList()
+        val merged = real.toMutableList()
+        for (sliver in slivers) {
+            val hostIndex = bestHost(sliver, merged)
+            merged[hostIndex] = union(merged[hostIndex], sliver)
+        }
+        return merged
+    }
+
+    /**
+     * Picks which kept panel a sliver belongs to. A sliver is thin along one axis, so its true owner
+     * is usually whichever panel shares its extent along the OTHER axis (same row for a vertical
+     * sliver, same column for a horizontal one) with little to no gap along the thin axis. That
+     * overlap is scored as a fraction of the *smaller* of the two spans, not raw intersection area — a
+     * raw-area score would let a huge splash panel that merely reaches the sliver outrank the small
+     * panel it's actually sitting against, since the splash panel's sheer size inflates the
+     * intersection. Gap and candidate size are both continuous penalties rather than hard cutoffs, so
+     * there's always a winner — a weak or distant match still beats leaving the sliver's area unclaimed.
+     */
+    private fun bestHost(sliver: PanelRect, candidates: List<PanelRect>): Int {
+        val vertical = sliver.width <= sliver.height
+        return candidates.indices.maxBy { index ->
+            val c = candidates[index]
+            val overlapFrac: Float
+            val gap: Float
+            if (vertical) {
+                overlapFrac = overlap(sliver.top, sliver.bottom, c.top, c.bottom) /
+                    minOf(sliver.height, c.height).coerceAtLeast(1e-4f)
+                gap = (maxOf(sliver.left, c.left) - minOf(sliver.right, c.right)).coerceAtLeast(0f)
+            } else {
+                overlapFrac = overlap(sliver.left, sliver.right, c.left, c.right) /
+                    minOf(sliver.width, c.width).coerceAtLeast(1e-4f)
+                gap = (maxOf(sliver.top, c.top) - minOf(sliver.bottom, c.bottom)).coerceAtLeast(0f)
+            }
+            // Tiebreak toward the closer, tighter candidate so a near-tie doesn't fall to whichever
+            // panel happens to be largest or farthest away.
+            overlapFrac - gap * GAP_PENALTY - c.area * AREA_PENALTY
         }
     }
+
+    private fun overlap(a0: Float, a1: Float, b0: Float, b1: Float): Float =
+        (minOf(a1, b1) - maxOf(a0, b0)).coerceAtLeast(0f)
+
+    private fun union(a: PanelRect, b: PanelRect): PanelRect =
+        PanelRect(minOf(a.left, b.left), minOf(a.top, b.top), maxOf(a.right, b.right), maxOf(a.bottom, b.bottom))
 
     /**
      * Greedy suppression by confidence: a box is dropped if it overlaps an already-kept box too
@@ -173,5 +238,11 @@ class YoloPanelDecoder(
         const val DEFAULT_NMS_IOU = 0.45f
         const val DEFAULT_CONTAINMENT = 0.6f
         const val DEFAULT_MIN_AREA_FRACTION = 0.008f
+        /** Panel detections whose narrower side is under this fraction of the page are merged into a neighbor. */
+        const val DEFAULT_MIN_SIDE_FRACTION = 0.08f
+        /** How strongly a gap between a sliver and a candidate panel counts against that candidate in [bestHost]. */
+        const val GAP_PENALTY = 2f
+        /** How strongly a candidate panel's own size counts against it in [bestHost] (tiebreak only). */
+        const val AREA_PENALTY = 1e-3f
     }
 }

@@ -57,6 +57,83 @@ class YoloPanelDecoderTest {
     }
 
     @Test
+    fun legitimatelyNarrowPanelSurvives() {
+        // A real, standalone narrow panel (10% of the page width — comfortably above the 8%
+        // sliver-rejection threshold) must not be caught by the same filter that rejects slivers.
+        val lb = Letterbox.fit(640, 640, 640)
+        val (raw, shape) = endToEnd(listOf(floatArrayOf(50f, 20f, 114f, 600f, 0.9f, 0f)))
+        assertEquals(1, decoder.decode(raw, shape, lb, 640, 640).panels.size)
+    }
+
+    @Test
+    fun thinSliverAlongAPanelEdgeIsMergedIntoIt() {
+        // Regression: a real detected panel plus a spurious secondary detection running along its
+        // right edge — narrow (20px = 3.1% of the page width) but tall enough to clear the min-area
+        // filter on area alone (12400px² > the ~3277px² threshold). It's deliberately positioned so
+        // only ~21% of it overlaps the real panel — well under the 60% containment-suppression
+        // threshold and the 45% IoU threshold — so neither existing NMS check catches it; only the
+        // min-side-fraction filter does. Rather than drop that sliver's area, it should be folded
+        // into the real panel it overlaps, extending that panel's bounds to cover it.
+        val lb = Letterbox.fit(640, 640, 640)
+        val (raw, shape) = endToEnd(
+            listOf(
+                floatArrayOf(40f, 40f, 560f, 560f, 0.92f, 0f), // real panel, ~81% of the page
+                floatArrayOf(555f, 10f, 575f, 630f, 0.80f, 0f), // sliver: 20px wide (3.1%), 620px tall
+            ),
+        )
+        val panels = decoder.decode(raw, shape, lb, 640, 640).panels
+        assertEquals(1, panels.size)
+        val p = panels.single()
+        // Union of the real panel (40,40,560,560) and the sliver (555,10,575,630) in normalized coords.
+        near(0.0625f, p.left); near(0.0156f, p.top); near(0.898f, p.right); near(0.984f, p.bottom)
+    }
+
+    @Test
+    fun sliverNextToATightPanelIsNotStolenByALargerNeighbor() {
+        // Regression from a real on-device capture: a thin sliver at the page's bottom-right corner
+        // sits almost exactly across the small bottom-right panel's row, but a nearby splash panel
+        // spanning most of the page's middle used to win the merge under a raw-overlap-area score
+        // simply because it was larger. The small panel must win since it's the one whose height the
+        // sliver's own height maps onto almost exactly.
+        val lb = Letterbox.fit(640, 640, 640)
+        val (raw, shape) = endToEnd(
+            listOf(
+                floatArrayOf(472f, 0f, 640f, 201f, 0.9f, 0f), // top-right panel
+                floatArrayOf(50f, 0f, 462f, 202f, 0.9f, 0f), // top-left panel
+                floatArrayOf(45f, 202f, 640f, 473f, 0.9f, 0f), // big splash panel spanning the middle row
+                floatArrayOf(468f, 473f, 593f, 640f, 0.9f, 0f), // small bottom-right panel — true sliver host
+                floatArrayOf(47f, 474f, 460f, 640f, 0.9f, 0f), // bottom-left panel
+                floatArrayOf(603f, 474f, 640f, 639f, 0.85f, 0f), // sliver: 37px wide (5.8%), against the bottom-right panel
+            ),
+        )
+        val panels = decoder.decode(raw, shape, lb, 640, 640).panels
+        assertEquals(5, panels.size)
+        // The small bottom-right panel absorbed the sliver — its right edge now reaches the page edge.
+        val bottomRight = panels.first { it.left > 0.7f && it.top > 0.7f }
+        near(1f, bottomRight.right, 0.02f)
+    }
+
+    @Test
+    fun distantSliverStillMergesIntoTheOnlyPanelRatherThanBeingDropped() {
+        // Regression: an earlier version of the merge logic had a "too far/weak a match, just drop
+        // it" cutoff — but a dropped sliver is unaccounted-for page content, which is worse than an
+        // imprecise merge. Even a sliver nowhere near the only real panel on the page must still end
+        // up folded into it rather than vanishing.
+        val lb = Letterbox.fit(640, 640, 640)
+        val (raw, shape) = endToEnd(
+            listOf(
+                floatArrayOf(40f, 40f, 560f, 560f, 0.92f, 0f), // real panel, ~81% of the page
+                floatArrayOf(0f, 0f, 20f, 620f, 0.80f, 0f), // sliver far from the real panel: 0-20px wide
+            ),
+        )
+        val panels = decoder.decode(raw, shape, lb, 640, 640).panels
+        assertEquals(1, panels.size)
+        val p = panels.single()
+        // Union of the real panel (40,40,560,560) and the distant sliver (0,0,20,620) in normalized coords.
+        near(0f, p.left); near(0f, p.top); near(0.875f, p.right); near(0.969f, p.bottom)
+    }
+
+    @Test
     fun nestedDuplicatePanelsAreSuppressed() {
         val lb = Letterbox.fit(640, 640, 640)
         val (raw, shape) = endToEnd(

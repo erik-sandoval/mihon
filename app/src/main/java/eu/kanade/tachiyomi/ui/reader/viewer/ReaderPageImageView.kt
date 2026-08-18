@@ -143,7 +143,9 @@ open class ReaderPageImageView @JvmOverloads constructor(
     /**
      * The intro/outro full-page reveal stops aren't real panels — excluding them from the debug
      * overlay keeps its numbering matching the actual detected/planned panels, instead of being
-     * offset by one (or two) for whichever bracketing reveals are enabled.
+     * offset by one (or two) for whichever bracketing reveals are enabled. Shown at their actual
+     * padded (zoom-region) bounds, same as real reading — a leftover un-merged sliver still shows up
+     * as its own small box overlapping its neighbor's padded edge, which is what makes it findable.
      */
     private fun List<PanelRect>.excludingFullPageStops(): List<PanelRect> =
         filterNot { it.width >= FULL_PAGE_DEBUG_THRESHOLD && it.height >= FULL_PAGE_DEBUG_THRESHOLD }

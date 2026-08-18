@@ -301,6 +301,31 @@ class ReaderActivity : BaseActivity() {
                     )
                 }
             }
+
+            val showDebugOrder by readerPreferences.panelByPanelShowDebugOrder.collectAsState()
+            // Hidden while the menu is showing — the reader's own bottom icon bar (reading mode /
+            // orientation / settings) sits in that same corner, and this would otherwise cover the
+            // settings icon needed to turn the overlay back off.
+            if (showDebugOrder && !state.menuVisible) {
+                // Not overlaid on the page itself (would obscure art in a screenshot) — just enough
+                // to identify which series/chapter/page a debug screenshot came from later. Mirrors
+                // ReaderPageIndicator's positioning above: bottom-center with navigationBarsPadding()
+                // so it sits right under the page instead of under the system nav bar.
+                Surface(
+                    modifier = Modifier
+                        .align(Alignment.BottomCenter)
+                        .navigationBarsPadding(),
+                    shape = MaterialTheme.shapes.small,
+                    color = MaterialTheme.colorScheme.inverseSurface,
+                ) {
+                    Text(
+                        text = "${state.manga?.title} — ${state.currentChapter?.chapter?.name} — p${state.currentPage}/${state.totalPages}",
+                        color = MaterialTheme.colorScheme.inverseOnSurface,
+                        style = MaterialTheme.typography.titleMedium,
+                        modifier = Modifier.padding(horizontal = 12.dp, vertical = 8.dp),
+                    )
+                }
+            }
         }
 
         val onDismissRequest = viewModel::closeDialog

@@ -7,6 +7,65 @@ import org.junit.jupiter.api.Test
 class PanelPipelineTest {
 
     @Test
+    fun hugePanelNextToNarrowSiblingDoesNotSwallowIt() {
+        // Regression from a real on-device page: BASE_MARGIN scales with a panel's own size, so a
+        // panel spanning most of the page got a margin bigger than its narrow neighbor's entire
+        // width, engulfing most of it. Capping each side's margin at half the shared gap keeps both
+        // sides honest regardless of the size mismatch between them.
+        // Width kept under PanelPlanner's fullWidthFraction (0.85) so the huge panel isn't itself
+        // divided — this test is isolating the padding/capping behavior, not the planner's.
+        val huge = PanelRect(0.0f, 0.0f, 0.80f, 1.0f)
+        val narrow = PanelRect(0.82f, 0.0f, 1.0f, 1.0f)
+        val regions = PanelPipeline.zoomRegions(listOf(huge, narrow), emptyList(), 1000, 1000, false)
+        val hugeRegion = regions.first { it.width > 0.5f }
+        val narrowRegion = regions.first { it.width < 0.5f }
+        assertTrue(
+            hugeRegion.right <= narrowRegion.left + 1e-4f,
+            "huge panel's margin should not cross into the narrow one: $hugeRegion vs $narrowRegion",
+        )
+    }
+
+    @Test
+    fun outermostPanelExtendsToTheUnclaimedPageEdge() {
+        // Regression from a real on-device page: a narrow panel's own margin (5.7% of its own
+        // ~8%-wide size) doesn't reach the page edge, leaving a slice of real art outside every
+        // panel's bounds — content that would never be shown during panel-by-panel navigation
+        // since nothing else claims it either. The narrow panel is the leftmost thing in its row
+        // (nothing else shares its row further left), so it should absorb that margin instead of
+        // leaving it an orphaned, unreachable strip.
+        val narrow = PanelRect(0.02f, 0.0f, 0.10f, 0.4f)
+        val wide = PanelRect(0.20f, 0.0f, 1.0f, 0.4f)
+        val bottom = PanelRect(0.0f, 0.5f, 1.0f, 1.0f)
+        val regions = PanelPipeline.zoomRegions(listOf(narrow, wide, bottom), emptyList(), 1000, 1000, false)
+        val leftmost = regions.first { it.left < 0.15f && it.bottom < 0.5f }
+        assertEquals(0f, leftmost.left, "nothing else covers the strip left of the narrow panel")
+    }
+
+    @Test
+    fun largeBlankMarginIsNotFullyClaimedByExtension() {
+        // A big empty border shouldn't drag a panel all the way to the page edge chasing it — only a
+        // bounded amount gets absorbed, on the assumption a very wide gap is more likely decorative
+        // whitespace than art the model missed.
+        val panel = PanelRect(0.35f, 0.0f, 1.0f, 0.5f)
+        val other = PanelRect(0.0f, 0.6f, 1.0f, 1.0f)
+        val regions = PanelPipeline.zoomRegions(listOf(panel, other), emptyList(), 1000, 1000, false)
+        val panelRegion = regions.first { it.left > 0.1f }
+        assertTrue(panelRegion.left > 0.15f, "should not extend all the way to the page edge: $panelRegion")
+    }
+
+    @Test
+    fun panelWithAnotherPanelToItsLeftDoesNotExtendToTheEdge() {
+        // The flip side of the above: when another panel genuinely already covers the region closer
+        // to the edge, extending would incorrectly claim that panel's own territory.
+        val left = PanelRect(0.0f, 0.0f, 0.30f, 0.4f)
+        val right = PanelRect(0.40f, 0.0f, 1.0f, 0.4f)
+        val bottom = PanelRect(0.0f, 0.5f, 1.0f, 1.0f)
+        val regions = PanelPipeline.zoomRegions(listOf(left, right, bottom), emptyList(), 1000, 1000, false)
+        val rightRegion = regions.first { it.left > 0.15f && it.bottom < 0.5f }
+        assertTrue(rightRegion.left > 0.30f, "should stay short of the left panel's own territory: $rightRegion")
+    }
+
+    @Test
     fun pageWithNoDetectedPanelsIsShownWhole() {
         // When the model returns nothing, there's no real panel geometry to zoom into — show the
         // whole page as a single stop rather than guessing at a geometric split.
@@ -36,14 +95,16 @@ class PanelPipelineTest {
     @Test
     fun panelWithNoOverflowingBubbleOnlyGetsTheBaseMargin() {
         // Both panels are deliberately >10% area so neither is a merge candidate, keeping this a
-        // pure padding test rather than exercising the planner's merge/divide behavior too.
+        // pure padding test rather than exercising the planner's merge/divide behavior too. `other`
+        // shares the panel's row and sits to its right, so extendToPageEdges doesn't pull that edge
+        // all the way to the page boundary — isolating pad()'s own base-margin growth to measure.
         val panel = PanelRect(0.10f, 0.10f, 0.45f, 0.45f)
         val bubble = PanelRect(0.20f, 0.20f, 0.30f, 0.30f) // fully inside, nowhere near an edge
-        val other = PanelRect(0.60f, 0.60f, 0.95f, 0.95f)
+        val other = PanelRect(0.50f, 0.10f, 0.90f, 0.45f)
         val region = PanelPipeline.zoomRegions(listOf(panel, other), listOf(bubble), 1000, 1000, false)
             .first { it.left < 0.15f }
         // Base margin only: 5.7% of the panel's own 0.35-wide size ≈ 0.02, well short of the bubble.
-        assertTrue(region.left in 0.075f..0.085f, "expected only the base margin, got $region")
+        assertTrue(region.right in 0.465f..0.475f, "expected only the base margin, got $region")
     }
 
     @Test
