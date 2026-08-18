@@ -333,10 +333,12 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     protected open fun moveRight() {
         if (pager.currentItem != adapter.count - 1) {
             val holder = (currentPage as? ReaderPage)?.let(::getPageHolder)
-            if (holder != null && config.navigateToPan && holder.canPanRight()) {
-                holder.panRight()
-            } else {
-                pager.setCurrentItem(pager.currentItem + 1, config.usePageTransitions)
+            when {
+                holder != null && holder.hasPanelStops() && holder.canAdvancePanelStop() -> holder.advancePanelStop()
+                holder != null && holder.hasPanelStops() ->
+                    pager.setCurrentItem(pager.currentItem + 1, config.usePageTransitions)
+                holder != null && config.navigateToPan && holder.canPanRight() -> holder.panRight()
+                else -> pager.setCurrentItem(pager.currentItem + 1, config.usePageTransitions)
             }
         }
     }
@@ -347,10 +349,12 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     protected open fun moveLeft() {
         if (pager.currentItem != 0) {
             val holder = (currentPage as? ReaderPage)?.let(::getPageHolder)
-            if (holder != null && config.navigateToPan && holder.canPanLeft()) {
-                holder.panLeft()
-            } else {
-                pager.setCurrentItem(pager.currentItem - 1, config.usePageTransitions)
+            when {
+                holder != null && holder.hasPanelStops() && holder.canRetreatPanelStop() -> holder.retreatPanelStop()
+                holder != null && holder.hasPanelStops() ->
+                    pager.setCurrentItem(pager.currentItem - 1, config.usePageTransitions)
+                holder != null && config.navigateToPan && holder.canPanLeft() -> holder.panLeft()
+                else -> pager.setCurrentItem(pager.currentItem - 1, config.usePageTransitions)
             }
         }
     }

@@ -11,11 +11,16 @@ import eu.kanade.tachiyomi.ui.reader.model.InsertPage
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderProgressIndicator
+import eu.kanade.tachiyomi.ui.reader.viewer.panel.Panel
+import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelRect
+import eu.kanade.tachiyomi.ui.reader.viewer.panel.flattenToStops
 import eu.kanade.tachiyomi.ui.webview.WebViewActivity
 import eu.kanade.tachiyomi.widget.ViewPagerAdapter
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.combine
+import kotlinx.coroutines.flow.drop
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.supervisorScope
 import logcat.LogPriority
@@ -62,7 +67,75 @@ class PagerPageHolder(
      */
     private var loadJob: Job? = null
 
+    /**
+     * Job keeping the spotlight's opacity in sync with the user's setting. Needed because this
+     * holder is created once and can stay alive (and on-screen) for as long as its page is, so a
+     * one-shot read at init time would miss changes made from the settings dialog while reading.
+     */
+    private var opacityJob: Job? = null
+
+    /**
+     * Job keeping the intro/outro full-page stops in sync with the user's settings, for the same
+     * reason as [opacityJob]. Re-flattens the already-detected [detectedPanels] rather than
+     * re-running detection.
+     */
+    private var introOutroJob: Job? = null
+
+    /**
+     * Job re-detecting panels when reading direction changes, for the same reason as [opacityJob].
+     * Direction isn't just a display concern — it changes both the reading order and the
+     * merge/divide profile the pipeline applies (see PanelPipeline), so unlike the intro/outro
+     * toggle this needs a full re-detect rather than just re-flattening [detectedPanels].
+     */
+    private var directionJob: Job? = null
+
+    /** The raw detected panels for this page, cached here so intro/outro toggles can be reapplied without re-detecting. */
+    private var detectedPanels: List<Panel>? = null
+
+    /** The page's image bytes, kept around so [directionJob] can re-run detection without reloading the page. */
+    private var panelImageBytes: Buffer? = null
+
     init {
+        if (viewer is PanelByPanelViewer) {
+            panelModeActive = true
+            panelOverlayOpacityPercent = viewer.readerPreferences.panelByPanelOverlayOpacity.get()
+            opacityJob = scope.launch {
+                viewer.readerPreferences.panelByPanelOverlayOpacity.changes().collectLatest {
+                    panelOverlayOpacityPercent = it
+                }
+            }
+            introOutroJob = scope.launch {
+                combine(
+                    viewer.readerPreferences.panelByPanelShowFullPageIntro.changes(),
+                    viewer.readerPreferences.panelByPanelShowFullPageOutro.changes(),
+                ) { showIntro, showOutro -> showIntro to showOutro }
+                    .collectLatest { (showIntro, showOutro) ->
+                        val panels = detectedPanels ?: return@collectLatest
+                        setPanelStops(
+                            panels.flattenToStops(showIntro = showIntro, showOutro = showOutro),
+                            anchorRect = currentPanelStopRect(),
+                        )
+                    }
+            }
+            directionJob = scope.launch {
+                // Skip the initial replay: it fires before the page has even loaded (panelImageBytes
+                // is still null then), so it would be a redundant no-op racing the first natural
+                // detect call from loadPanels() — only react to an actual later toggle.
+                viewer.readerPreferences.panelByPanelRightToLeft.changes().drop(1).collectLatest {
+                    val imageBytes = panelImageBytes ?: return@collectLatest
+                    try {
+                        loadPanels(viewer, imageBytes, anchorRect = currentPanelStopRect())
+                    } catch (e: Throwable) {
+                        logcat(LogPriority.ERROR, e) { "Panel re-detection failed for page ${page.index}" }
+                    }
+                }
+            }
+            val viewModel = viewer.activity.viewModel
+            viewModel.state.value.savedPanelStop?.let { saved ->
+                if (saved.pageIndex == page.index) panelStopIndexOverride = saved.stopIndex
+            }
+            onPanelStopChanged = { index -> viewModel.savePanelStop(page.index, index) }
+        }
         loadJob = scope.launch { loadPageAndProcessStatus() }
     }
 
@@ -74,6 +147,12 @@ class PagerPageHolder(
         super.onDetachedFromWindow()
         loadJob?.cancel()
         loadJob = null
+        opacityJob?.cancel()
+        opacityJob = null
+        introOutroJob?.cancel()
+        introOutroJob = null
+        directionJob?.cancel()
+        directionJob = null
     }
 
     private fun initProgressIndicator() {
@@ -150,7 +229,7 @@ class PagerPageHolder(
         val streamFn = page.stream ?: return
 
         try {
-            val (source, isAnimated, background) = withIOContext {
+            val (source, isAnimated, background, panelSourceBytes) = withIOContext {
                 val source = streamFn().use { process(item, Buffer().readFrom(it)) }
                 val isAnimated = ImageUtil.isAnimatedAndSupported(source)
                 val background = if (!isAnimated && viewer.config.automaticBackground) {
@@ -158,7 +237,14 @@ class PagerPageHolder(
                 } else {
                     null
                 }
-                Triple(source, isAnimated, background)
+                val panelSourceBytes = if (
+                    !isAnimated && viewer is PanelByPanelViewer && !viewer.config.dualPageSplit
+                ) {
+                    Buffer().apply { writeAll(source.peek()) }
+                } else {
+                    null
+                }
+                PageLoadResult(source, isAnimated, background, panelSourceBytes)
             }
             withUIContext {
                 setImage(
@@ -177,11 +263,38 @@ class PagerPageHolder(
                 }
                 removeErrorLayout()
             }
+            if (panelSourceBytes != null && viewer is PanelByPanelViewer) {
+                panelImageBytes = panelSourceBytes
+                try {
+                    loadPanels(viewer, panelSourceBytes)
+                } catch (e: Throwable) {
+                    logcat(LogPriority.ERROR, e) { "Panel detection failed for page ${page.index}" }
+                }
+            }
         } catch (e: Throwable) {
             logcat(LogPriority.ERROR, e)
             withUIContext {
                 setError(e)
             }
+        }
+    }
+
+    private data class PageLoadResult(
+        val source: BufferedSource,
+        val isAnimated: Boolean,
+        val background: android.graphics.drawable.Drawable?,
+        val panelSourceBytes: Buffer?,
+    )
+
+    private suspend fun loadPanels(viewer: PanelByPanelViewer, imageBytes: Buffer, anchorRect: PanelRect? = null) {
+        val panels = viewer.panelDetector.detect(page, imageBytes, viewer.panelDirection)
+        detectedPanels = panels
+        val stops = panels.flattenToStops(
+            showIntro = viewer.readerPreferences.panelByPanelShowFullPageIntro.get(),
+            showOutro = viewer.readerPreferences.panelByPanelShowFullPageOutro.get(),
+        )
+        withUIContext {
+            setPanelStops(stops, anchorRect = anchorRect)
         }
     }
 

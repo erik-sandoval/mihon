@@ -35,11 +35,13 @@ import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView.SCALE_TYPE_
 import com.github.chrisbanes.photoview.PhotoView
 import eu.kanade.tachiyomi.data.coil.cropBorders
 import eu.kanade.tachiyomi.data.coil.customDecoder
+import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelRect
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonSubsamplingImageView
 import eu.kanade.tachiyomi.util.system.animatorDurationScale
 import eu.kanade.tachiyomi.util.view.isVisibleOnScreen
 import okio.BufferedSource
 import tachiyomi.core.common.util.system.ImageUtil
+import kotlin.math.min
 
 /**
  * A wrapper view for showing page image.
@@ -92,7 +94,66 @@ open class ReaderPageImageView @JvmOverloads constructor(
         onViewClicked?.invoke()
     }
 
+    /** Set by [PagerPageHolder] before load starts, when this page belongs to a panel-by-panel viewer. */
+    var panelModeActive: Boolean = false
+
+    private var panelStops: List<PanelRect> = emptyList()
+    private var panelStopIndex: Int = -1
+    private var panelStopsEnterForward: Boolean = true
+
+    /**
+     * Set by [PagerPageHolder] before load starts, to resume on a specific stop (e.g. after the
+     * viewer was recreated by a device rotation) instead of the page's first/last stop. Consumed
+     * (cleared) the first time [setPanelStops] runs.
+     */
+    var panelStopIndexOverride: Int? = null
+
+    /** Notified whenever the current panel stop changes, so it can be persisted for restoration. */
+    var onPanelStopChanged: ((index: Int) -> Unit)? = null
+
+    /**
+     * True once the user pinch-zooms/pans/flings away from the current stop, so
+     * [syncPanelStopIndexToCurrentView] knows there's actually a drift to correct for. Without this
+     * guard, that resync would also run right after a tap-driven [animateToPanelStop] — reading the
+     * view's still-mid-flight center back as "nearest stop" snaps the index back near its start and
+     * a rapid next tap re-plays the same short hop instead of advancing, so the reader never visibly
+     * progresses through closely-spaced stops. Set on genuine touch/fling center changes; cleared
+     * once a stop is set programmatically (its own [onCenterChanged] firing with `ORIGIN_ANIM` never
+     * sets it in the first place).
+     */
+    private var userMovedAwayFromStop: Boolean = false
+
+    /** Dims panels other than the current stop; created lazily the first time it's needed. */
+    private var panelSpotlight: PanelSpotlightOverlay? = null
+
+    /** Set by [PagerPageHolder] from the user's preference before load starts. */
+    var panelOverlayOpacityPercent: Int = PanelSpotlightOverlay.DEFAULT_OPACITY_PERCENT
+        set(value) {
+            field = value
+            panelSpotlight?.opacityPercent = value
+        }
+
+    private fun spotlightFor(view: SubsamplingScaleImageView): PanelSpotlightOverlay {
+        panelSpotlight?.let { return it }
+        val overlay = PanelSpotlightOverlay(context).also {
+            it.sourceView = view
+            it.opacityPercent = panelOverlayOpacityPercent
+        }
+        addView(overlay, MATCH_PARENT, MATCH_PARENT)
+        panelSpotlight = overlay
+        return overlay
+    }
+
+    private fun setSpotlightVisible(visible: Boolean) {
+        val overlay = panelSpotlight ?: return
+        val target = if (visible) 1f else 0f
+        if (overlay.alpha == target) return
+        overlay.animate().alpha(target).setDuration(SPOTLIGHT_FADE_MS).start()
+    }
+
     open fun onPageSelected(forward: Boolean) {
+        panelStopsEnterForward = forward
+        if (panelModeActive) return
         with(pageView as? SubsamplingScaleImageView) {
             if (this == null) return
             if (isReady) {
@@ -113,6 +174,139 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 )
             }
         }
+    }
+
+    /**
+     * Sets the ordered list of panel stops (normalized 0f..1f image-fraction coordinates) for
+     * panel-by-panel guided navigation, and jumps to the first (or last, if this page was
+     * entered backward) stop. Pass an empty list to clear (falls back to a single full-page stop).
+     */
+    fun setPanelStops(stops: List<PanelRect>, anchorRect: PanelRect? = null) {
+        panelStops = stops.ifEmpty { listOf(PanelRect.FULL_PAGE) }
+        panelStopIndex = when {
+            // A settings change (reading direction, intro/outro toggle) re-supplied the stop list
+            // for the page currently being read — land on whichever new stop covers roughly the
+            // same content the reader was already looking at, instead of jumping to the entry stop.
+            anchorRect != null -> nearestPanelStopIndex(anchorRect)
+            else -> panelStopIndexOverride?.coerceIn(0, panelStops.lastIndex)
+                ?: if (panelStopsEnterForward) 0 else panelStops.lastIndex
+        }
+        panelStopIndexOverride = null
+        userMovedAwayFromStop = false
+        if (panelModeActive) {
+            (pageView as? SubsamplingScaleImageView)?.let { spotlightFor(it).alpha = 1f }
+        }
+        jumpToPanelStop(panelStopIndex)
+        onPanelStopChanged?.invoke(panelStopIndex)
+    }
+
+    /** The stop currently being read, so it can be passed back into [setPanelStops] as an anchor. */
+    fun currentPanelStopRect(): PanelRect? = panelStops.getOrNull(panelStopIndex)
+
+    private fun nearestPanelStopIndex(anchor: PanelRect): Int = panelStops.indices.minByOrNull { i ->
+        val s = panelStops[i]
+        val dx = s.centerX - anchor.centerX
+        val dy = s.centerY - anchor.centerY
+        dx * dx + dy * dy
+    } ?: 0
+
+    fun hasPanelStops(): Boolean = panelStops.isNotEmpty()
+
+    fun canAdvancePanelStop(): Boolean = panelStops.isNotEmpty() && panelStopIndex < panelStops.lastIndex
+
+    fun canRetreatPanelStop(): Boolean = panelStops.isNotEmpty() && panelStopIndex > 0
+
+    fun advancePanelStop() {
+        syncPanelStopIndexToCurrentView()
+        if (!canAdvancePanelStop()) return
+        panelStopIndex++
+        animateToPanelStop(panelStopIndex)
+        onPanelStopChanged?.invoke(panelStopIndex)
+    }
+
+    fun retreatPanelStop() {
+        syncPanelStopIndexToCurrentView()
+        if (!canRetreatPanelStop()) return
+        panelStopIndex--
+        animateToPanelStop(panelStopIndex)
+        onPanelStopChanged?.invoke(panelStopIndex)
+    }
+
+    /**
+     * If the user pinch-zoomed away from the current panel stop, find the nearest stop to
+     * where they actually are before advancing/retreating, so guided navigation resumes
+     * from the right place instead of jumping relative to a stale index.
+     */
+    private fun syncPanelStopIndexToCurrentView() {
+        if (!userMovedAwayFromStop) return
+        val view = pageView as? SubsamplingScaleImageView ?: return
+        val center = view.center ?: return
+        if (panelStops.isEmpty()) return
+        val nearestIndex = panelStops.indices.minByOrNull { index ->
+            val (_, target) = view.panelStopTarget(panelStops[index])
+            val dx = target.x - center.x
+            val dy = target.y - center.y
+            dx * dx + dy * dy
+        } ?: return
+        panelStopIndex = nearestIndex
+        userMovedAwayFromStop = false
+        setSpotlightVisible(true)
+    }
+
+    private fun jumpToPanelStop(index: Int) {
+        val view = pageView as? SubsamplingScaleImageView ?: return
+        val target = panelStops.getOrNull(index) ?: return
+        if (panelModeActive) spotlightFor(view).targetRect = target
+        if (view.isReady) {
+            val (scale, center) = view.panelStopTarget(target)
+            view.setScaleAndCenter(scale, center)
+        } else {
+            view.setOnImageEventListener(
+                object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
+                    override fun onReady() {
+                        view.setupZoom(config)
+                        val (scale, center) = view.panelStopTarget(target)
+                        view.setScaleAndCenter(scale, center)
+                        // targetRect was set above while the view wasn't ready yet, so that
+                        // assignment's own invalidate() drew nothing (sourceToViewCoord needs a
+                        // ready view). setScaleAndCenter usually re-triggers the state-changed
+                        // listener too, but don't rely on that alone — explicitly redraw now that
+                        // the view can actually resolve view coordinates, so the spotlight can't
+                        // end up stuck undrawn until some later, unrelated stop change.
+                        panelSpotlight?.invalidate()
+                        this@ReaderPageImageView.onImageLoaded()
+                    }
+
+                    override fun onImageLoadError(e: Exception) {
+                        onImageLoadError(e)
+                    }
+                },
+            )
+        }
+    }
+
+    private fun animateToPanelStop(index: Int) {
+        val view = pageView as? SubsamplingScaleImageView ?: return
+        val target = panelStops.getOrNull(index) ?: return
+        if (panelModeActive) spotlightFor(view).targetRect = target
+        val (scale, center) = view.panelStopTarget(target)
+        view.animateScaleAndCenter(scale, center)!!
+            .withEasing(EASE_OUT_QUAD)
+            .withDuration(250)
+            .withInterruptible(true)
+            .start()
+    }
+
+    private fun SubsamplingScaleImageView.panelStopTarget(rect: PanelRect): Pair<Float, PointF> {
+        val targetScale = min(
+            width / (rect.width * sWidth),
+            height / (rect.height * sHeight),
+        ).coerceIn(minScale, maxScale)
+        val center = PointF(
+            (rect.left + rect.width / 2f) * sWidth,
+            (rect.top + rect.height / 2f) * sHeight,
+        )
+        return targetScale to center
     }
 
     private fun SubsamplingScaleImageView.landscapeZoom(forward: Boolean) {
@@ -234,16 +428,39 @@ open class ReaderPageImageView @JvmOverloads constructor(
             SubsamplingScaleImageView(context)
         }.apply {
             setDoubleTapZoomStyle(SubsamplingScaleImageView.ZOOM_FOCUS_CENTER)
-            setPanLimit(SubsamplingScaleImageView.PAN_LIMIT_INSIDE)
+            // PAN_LIMIT_INSIDE (the default elsewhere) clamps the requested center so the image
+            // never shows blank space past its edges — but that also stops a panel stop near a
+            // page edge from ever actually reaching screen-center; the clamp pulls it back toward
+            // the edge instead. Panel-by-panel trades that guarantee for PAN_LIMIT_CENTER, which
+            // honors the requested center exactly (letterboxing with blank margin if needed) so
+            // every panel, edge or not, lands centered.
+            val panLimit = if (panelModeActive) {
+                SubsamplingScaleImageView.PAN_LIMIT_CENTER
+            } else {
+                SubsamplingScaleImageView.PAN_LIMIT_INSIDE
+            }
+            setPanLimit(panLimit)
             setMinimumTileDpi(180)
+            // Panel-by-panel is a fully guided flow — pinch/pan/double-tap would let the reader
+            // zoom out from under it. Disabled here (not just left alone) so it can't happen at
+            // all until the page is rebuilt for a different reading mode.
+            if (panelModeActive) {
+                setZoomEnabled(false)
+                setPanEnabled(false)
+            }
             setOnStateChangedListener(
                 object : SubsamplingScaleImageView.OnStateChangedListener {
                     override fun onScaleChanged(newScale: Float, origin: Int) {
                         this@ReaderPageImageView.onScaleChanged(newScale)
+                        panelSpotlight?.invalidate()
                     }
 
                     override fun onCenterChanged(newCenter: PointF?, origin: Int) {
-                        // Not used
+                        if (origin != SubsamplingScaleImageView.ORIGIN_ANIM) {
+                            userMovedAwayFromStop = true
+                            setSpotlightVisible(false)
+                        }
+                        panelSpotlight?.invalidate()
                     }
                 },
             )
@@ -422,3 +639,4 @@ open class ReaderPageImageView @JvmOverloads constructor(
 }
 
 private const val MAX_ZOOM_SCALE = 5F
+private const val SPOTLIGHT_FADE_MS = 150L
