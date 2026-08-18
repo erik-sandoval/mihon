@@ -31,3 +31,14 @@ fun List<ChapterList.Item>.getNextUnread(manga: Manga): Chapter? {
         }
     }?.chapter
 }
+
+/**
+ * Gets the chapter the chapter list should open scrolled to: the next unread chapter, or — if
+ * every chapter is already read — the furthest-read one, so returning to a finished series still
+ * lands where you left off instead of back at the top.
+ */
+fun List<ChapterList.Item>.getScrollTarget(manga: Manga): Chapter? {
+    getNextUnread(manga)?.let { return it }
+    val chapters = applyFilters(manga)
+    return (if (manga.sortDescending()) chapters.firstOrNull() else chapters.lastOrNull())?.chapter
+}

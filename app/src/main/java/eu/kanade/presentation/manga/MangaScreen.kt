@@ -17,6 +17,7 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.systemBars
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.LazyListScope
+import androidx.compose.foundation.lazy.LazyListState
 import androidx.compose.foundation.lazy.items
 import androidx.compose.foundation.lazy.rememberLazyListState
 import androidx.compose.foundation.rememberScrollState
@@ -30,6 +31,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Text
 import androidx.compose.material3.animateFloatingActionButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
@@ -61,6 +63,7 @@ import eu.kanade.tachiyomi.data.download.model.Download
 import eu.kanade.tachiyomi.source.getNameForMangaInfo
 import eu.kanade.tachiyomi.ui.manga.ChapterList
 import eu.kanade.tachiyomi.ui.manga.MangaViewModel
+import eu.kanade.tachiyomi.util.chapter.getScrollTarget
 import eu.kanade.tachiyomi.util.system.copyToClipboard
 import tachiyomi.domain.chapter.model.Chapter
 import tachiyomi.domain.chapter.service.missingChaptersCount
@@ -76,6 +79,12 @@ import tachiyomi.presentation.core.i18n.stringResource
 import tachiyomi.presentation.core.util.shouldExpandFAB
 import tachiyomi.source.local.isLocal
 import kotlin.time.Instant
+
+/** Fixed items before the chapter list in [MangaScreenSmallImpl]: info box, action row, description, chapter header. */
+private const val FIXED_HEADER_ITEM_COUNT = 4
+
+/** Fixed items before the chapter list in [MangaScreenLargeImpl]: just the chapter header (info/description are in the side panel). */
+private const val FIXED_HEADER_ITEM_COUNT_LARGE = 1
 
 @Composable
 fun MangaScreen(
@@ -265,6 +274,13 @@ private fun MangaScreenSmallImpl(
             second = state.chapterListItems,
             third = state.isAnySelected,
         )
+    }
+
+    // Once per screen visit (not on every refresh) — lands on the chapter you're up to instead of
+    // requiring a manual scroll from the top on a long-running series.
+    LaunchedEffect(Unit) {
+        val index = scrollTargetIndex(state, listItem) ?: return@LaunchedEffect
+        chapterListState.centerOnItem((index + FIXED_HEADER_ITEM_COUNT).coerceAtLeast(0))
     }
 
     BackHandler(enabled = isAnySelected) {
@@ -515,6 +531,13 @@ fun MangaScreenLargeImpl(
 
     val chapterListState = rememberLazyListState()
 
+    // Once per screen visit (not on every refresh) — lands on the chapter you're up to instead of
+    // requiring a manual scroll from the top on a long-running series.
+    LaunchedEffect(Unit) {
+        val index = scrollTargetIndex(state, listItem) ?: return@LaunchedEffect
+        chapterListState.centerOnItem((index + FIXED_HEADER_ITEM_COUNT_LARGE).coerceAtLeast(0))
+    }
+
     BackHandler(enabled = isAnySelected) {
         onAllChapterSelected(false)
     }
@@ -729,6 +752,30 @@ private fun SharedMangaBottomActionMenu(
             selected.fastAny { it.downloadState == Download.State.DOWNLOADED }
         },
     )
+}
+
+/**
+ * Index (within [listItem], which includes missing-chapter separators, so this isn't just the
+ * chapter's position in [MangaViewModel.State.Success.processedChapters]) of the chapter the list
+ * should open scrolled to — the next unread chapter, or the furthest-read one if everything is
+ * already read — so a long-running series doesn't open scrolled to chapter 1 every time.
+ */
+private fun scrollTargetIndex(state: MangaViewModel.State.Success, listItem: List<ChapterList>): Int? {
+    val target = state.chapters.getScrollTarget(state.manga) ?: return null
+    return listItem.indexOfFirst { it is ChapterList.Item && it.chapter.id == target.id }.takeIf { it >= 0 }
+}
+
+/**
+ * Scrolls so item [index] lands centered in the viewport, not just visible. Item heights aren't
+ * known ahead of a layout pass, so this jumps there first to get it measured, then reads its
+ * actual size back off [LazyListState.layoutInfo] and re-scrolls with the offset that centers it.
+ */
+private suspend fun LazyListState.centerOnItem(index: Int) {
+    scrollToItem(index)
+    val info = layoutInfo
+    val item = info.visibleItemsInfo.firstOrNull { it.index == index } ?: return
+    val viewportSize = info.viewportEndOffset - info.viewportStartOffset
+    scrollToItem(index, item.size / 2 - viewportSize / 2)
 }
 
 private fun LazyListScope.sharedChapterItems(
