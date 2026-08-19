@@ -6,6 +6,7 @@ import android.view.KeyEvent
 import android.view.MotionEvent
 import androidx.viewpager.widget.DirectionalViewPager
 import eu.kanade.tachiyomi.ui.reader.viewer.GestureDetectorWithLongTap
+import kotlin.math.abs
 
 /**
  * Pager implementation that listens for tap and long tap and allows temporarily disabling touch
@@ -28,7 +29,23 @@ open class Pager(
     var longTapListener: ((MotionEvent) -> Boolean)? = null
 
     /**
-     * Gesture listener that implements tap and long tap events.
+     * Consulted on every new touch sequence, before the pager would decide to start its own
+     * drag-to-turn-page gesture. Returning true claims the whole gesture for [panelSwipeListener]
+     * instead — used so panel-by-panel can step through panel stops on a swipe, only falling back
+     * to a (programmatic, via [panelSwipeListener]'s own handling) page turn when no stop is left
+     * to step to. Left null (or returning false) preserves the pager's normal native swipe.
+     */
+    var panelSwipeInterceptGate: (() -> Boolean)? = null
+
+    /** Invoked with the physical drag direction (true = leftward) once such a swipe is detected. */
+    var panelSwipeListener: ((leftward: Boolean) -> Unit)? = null
+
+    /** Whether the gesture currently in progress was claimed via [panelSwipeInterceptGate]. */
+    private var interceptingForPanelSwipe = false
+
+    /**
+     * Gesture listener that implements tap, long tap, and (when claimed via
+     * [panelSwipeInterceptGate]) swipe events.
      */
     private val gestureListener = object : GestureDetectorWithLongTap.Listener() {
         override fun onSingleTapConfirmed(ev: MotionEvent): Boolean {
@@ -41,6 +58,12 @@ open class Pager(
             if (listener != null && listener.invoke(ev)) {
                 performHapticFeedback(HapticFeedbackConstants.LONG_PRESS)
             }
+        }
+
+        override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
+            if (!interceptingForPanelSwipe || abs(velocityX) <= abs(velocityY)) return false
+            panelSwipeListener?.invoke(velocityX < 0)
+            return true
         }
     }
 
@@ -66,10 +89,17 @@ open class Pager(
     }
 
     /**
-     * Whether the given [ev] should be intercepted. Only used to prevent crashes when child
-     * views manipulate [requestDisallowInterceptTouchEvent].
+     * Whether the given [ev] should be intercepted. Also decides, once per touch sequence (on
+     * [MotionEvent.ACTION_DOWN]), whether this gesture is claimed for panel-swipe handling via
+     * [panelSwipeInterceptGate] — if so, the pager never intercepts for its own drag-to-turn-page
+     * behavior for the rest of this sequence, leaving the raw events for [gestureListener]'s
+     * [GestureDetectorWithLongTap.Listener.onFling] to resolve instead.
      */
     override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+            interceptingForPanelSwipe = panelSwipeInterceptGate?.invoke() == true
+        }
+        if (interceptingForPanelSwipe) return false
         return try {
             super.onInterceptTouchEvent(ev)
         } catch (e: IllegalArgumentException) {

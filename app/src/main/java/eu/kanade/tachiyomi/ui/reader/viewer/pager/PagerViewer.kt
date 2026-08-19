@@ -129,6 +129,27 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             }
             false
         }
+        // Only ever claims a gesture when the current page actually has a panel stop to step to
+        // — for every other viewer this is false, leaving the pager's native swipe-to-turn-page
+        // untouched.
+        pager.panelSwipeInterceptGate = {
+            val holder = (currentPage as? ReaderPage)?.let(::getPageHolder)
+            holder != null && (
+                // Detection is async — claim the gesture during that window too, so a swipe right
+                // after a fresh page appears waits for it instead of the pager's native swipe
+                // immediately turning the page out from under it.
+                holder.isDetectingPanels() ||
+                    (holder.hasPanelStops() && (holder.canAdvancePanelStop() || holder.canRetreatPanelStop()))
+                )
+        }
+        // Mirrors the LEFT/RIGHT tap zones: moveLeft()/moveRight() already step a panel stop when
+        // one's available in that direction and fall back to turning the page when it isn't. RTL
+        // panel-by-panel reads "forward" toward the left physically, so the physical swipe
+        // direction that means "step forward" flips relative to the LTR/tap-zone convention.
+        pager.panelSwipeListener = { leftward ->
+            val rtl = readerPreferences.panelByPanelRightToLeft.get()
+            if (leftward != rtl) moveLeft() else moveRight()
+        }
 
         config.dualPageSplitChangedListener = { enabled ->
             if (!enabled) {
@@ -178,19 +199,24 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         val page = adapter.items.getOrNull(position)
         if (page != null && currentPage != page) {
             val allowPreload = checkAllowPreload(page as? ReaderPage)
+            // Page.number resets to 1 at the start of every chapter and chapter transitions have no
+            // number at all, so neither can tell direction on their own (e.g. gapless auto-advance
+            // from a chapter's last page straight into the next chapter's first page would compare
+            // 1 > 20 and read as backward; arriving at a ReaderPage right after a
+            // ChapterTransition.Prev screen used to be hardcoded as backward, which is wrong when
+            // you swiped back *out* of that transition into the chapter you came from). adapter.items
+            // is already the flat, reading-order list of every page/transition across every loaded
+            // chapter, so comparing positions in it is direction-safe universally.
             val forward = when {
-                currentPage is ReaderPage && page is ReaderPage -> {
-                    // if both pages have the same number, it's a split page with an InsertPage
-                    if (page.number == (currentPage as ReaderPage).number) {
-                        // the InsertPage is always the second in the reading direction
-                        page is InsertPage
-                    } else {
-                        page.number > (currentPage as ReaderPage).number
-                    }
+                // Same page number, different item: a split page with an InsertPage. Position alone
+                // can't disambiguate two logically-adjacent items sharing a number — the InsertPage
+                // is always the second in the reading direction.
+                currentPage is ReaderPage && page is ReaderPage && (currentPage as ReaderPage).number == page.number ->
+                    page is InsertPage
+                else -> {
+                    val previousPosition = currentPage?.let(adapter.items::indexOf) ?: -1
+                    previousPosition == -1 || position > previousPosition
                 }
-                currentPage is ChapterTransition.Prev && page is ReaderPage ->
-                    false
-                else -> true
             }
             currentPage = page
             when (page) {
@@ -336,6 +362,7 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         if (pager.currentItem != adapter.count - 1) {
             val holder = (currentPage as? ReaderPage)?.let(::getPageHolder)
             when {
+                holder != null && holder.isDetectingPanels() -> {} // wait for detection, don't skip ahead a page
                 holder != null && holder.hasPanelStops() && holder.canAdvancePanelStop() -> holder.advancePanelStop()
                 holder != null && holder.hasPanelStops() ->
                     pager.setCurrentItem(pager.currentItem + 1, config.usePageTransitions)
@@ -352,6 +379,7 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
         if (pager.currentItem != 0) {
             val holder = (currentPage as? ReaderPage)?.let(::getPageHolder)
             when {
+                holder != null && holder.isDetectingPanels() -> {} // wait for detection, don't skip back a page
                 holder != null && holder.hasPanelStops() && holder.canRetreatPanelStop() -> holder.retreatPanelStop()
                 holder != null && holder.hasPanelStops() ->
                     pager.setCurrentItem(pager.currentItem - 1, config.usePageTransitions)

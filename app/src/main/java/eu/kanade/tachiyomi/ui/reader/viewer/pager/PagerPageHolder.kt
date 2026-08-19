@@ -95,6 +95,17 @@ class PagerPageHolder(
     /** The raw detected panels for this page, cached here so intro/outro toggles can be reapplied without re-detecting. */
     private var detectedPanels: List<Panel>? = null
 
+    /**
+     * True while this page's panel detection is still running. Detection is async (up to
+     * [eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelDetector]'s own budget), so there's a real
+     * window right after a page appears where [hasPanelStops] is still false simply because
+     * nothing has come back yet — not because the page truly has no panels. Tapping/swiping during
+     * that window must not be read as "no stops here, turn the page" (see [PagerViewer.moveRight]/
+     * [PagerViewer.moveLeft]), or a chapter's freshly-loaded first page skips straight to its
+     * second page on the very first interaction.
+     */
+    fun isDetectingPanels(): Boolean = viewer is PanelByPanelViewer && detectedPanels == null
+
     /** The page's image bytes, kept around so [directionJob] can re-run detection without reloading the page. */
     private var panelImageBytes: Buffer? = null
 
@@ -126,7 +137,7 @@ class PagerPageHolder(
                     .collectLatest { (showIntro, showOutro) ->
                         val panels = detectedPanels ?: return@collectLatest
                         setPanelStops(
-                            panels.flattenToStops(showIntro = showIntro, showOutro = showOutro),
+                            panels.flattenToStops(showIntro = showIntro && page.index == 0, showOutro = showOutro),
                             anchorRect = currentPanelStopRect(),
                         )
                     }
@@ -306,7 +317,9 @@ class PagerPageHolder(
         val panels = viewer.panelDetector.detect(page, imageBytes, viewer.panelDirection)
         detectedPanels = panels
         val stops = panels.flattenToStops(
-            showIntro = viewer.readerPreferences.panelByPanelShowFullPageIntro.get(),
+            // Only the chapter's first page gets the reveal — showIntro isn't a "every page"
+            // toggle, it's specifically for orienting the reader when a new chapter begins.
+            showIntro = viewer.readerPreferences.panelByPanelShowFullPageIntro.get() && page.index == 0,
             showOutro = viewer.readerPreferences.panelByPanelShowFullPageOutro.get(),
         )
         withUIContext {

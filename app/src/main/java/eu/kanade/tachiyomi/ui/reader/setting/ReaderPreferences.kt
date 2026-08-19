@@ -72,10 +72,10 @@ class ReaderPreferences(
         true,
     )
 
-    /** Whether a page starts with a full-page reveal before stepping into its first panel. */
+    /** Whether a chapter's first page starts with a full-page reveal before stepping into its first panel. */
     val panelByPanelShowFullPageIntro: Preference<Boolean> = preferenceStore.getBoolean(
         "pref_panel_by_panel_show_full_page_intro",
-        false,
+        true,
     )
 
     /** Whether a page ends with a full-page reveal after its last panel, before turning the page. */

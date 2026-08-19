@@ -108,6 +108,26 @@ private fun ColumnScope.PanelByPanelViewerSettings(
 ) {
     HeadingItem(MR.strings.panel_by_panel_viewer)
 
+    val navigationModePager by viewModel.preferences.navigationModePager.collectAsState()
+    val pagerNavInverted by viewModel.preferences.pagerNavInverted.collectAsState()
+    TapZonesItems(
+        selected = navigationModePager,
+        onSelect = viewModel.preferences.navigationModePager::set,
+        invertMode = pagerNavInverted,
+        onSelectInvertMode = viewModel.preferences.pagerNavInverted::set,
+    )
+
+    val imageScaleType by viewModel.preferences.imageScaleType.collectAsState()
+    SettingsChipRow(MR.strings.pref_image_scale_type) {
+        ReaderPreferences.ImageScaleType.mapIndexed { index, it ->
+            FilterChip(
+                selected = imageScaleType == index + 1,
+                onClick = { viewModel.preferences.imageScaleType.set(index + 1) },
+                label = { Text(stringResource(it)) },
+            )
+        }
+    }
+
     CheckboxItem(
         label = stringResource(MR.strings.pref_panel_by_panel_right_to_left),
         pref = viewModel.preferences.panelByPanelRightToLeft,

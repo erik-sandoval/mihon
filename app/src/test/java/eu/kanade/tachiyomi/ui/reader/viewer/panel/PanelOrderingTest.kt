@@ -159,4 +159,54 @@ class PanelOrderingTest {
             ordered,
         )
     }
+
+    @Test
+    fun tallColumnPanelBesideTwoStackedPanelsReadsTheColumnFirst() {
+        // Coordinates measured from a real page (Bleach ch.10 p6): a full-width top panel, a row of
+        // two panels below it, then a bottom tier where one tall panel (giantSwipe) occupies the
+        // right column for the full tier height while two panels (thinStrip, kickPanel) are stacked
+        // in the left column. thinStrip's bottom edge (0.5299) happens to line up almost exactly with
+        // kickPanel's top edge, so findCut accepts it as a horizontal row boundary and wrongly groups
+        // thinStrip with the row above — even though thinStrip is really the top half of the left
+        // column beside giantSwipe. Confirmed correct order by the user reading the actual page.
+        val topScream = PanelRect(0.0f, 0.0f, 1.0f, 0.1856f)
+        val impact = PanelRect(0.326f, 0.1377f, 1.0f, 0.467f)
+        val taunt = PanelRect(0.0326f, 0.1856f, 0.4239f, 0.467f)
+        val thinStrip = PanelRect(0.0163f, 0.4311f, 0.6576f, 0.5299f)
+        val giantSwipe = PanelRect(0.5109f, 0.4581f, 1.0f, 1.0f)
+        val kickPanel = PanelRect(0.0163f, 0.5299f, 0.6413f, 1.0f)
+
+        val shuffled = listOf(kickPanel, thinStrip, topScream, giantSwipe, impact, taunt)
+        val ordered = PanelOrdering.order(shuffled, rightToLeft = true)
+
+        assertEquals(
+            listOf(topScream, impact, taunt, giantSwipe, thinStrip, kickPanel),
+            ordered,
+        )
+    }
+
+    @Test
+    fun columnsInterleavedWithARowBoundaryStillReadRightColumnFirst() {
+        // Coordinates approximated from a real page (Bleach ch.9 p8), where the panel detector's
+        // real output originally read 1,2,3,4,5 (tier-by-tier) but the user — reading the actual
+        // page — confirmed the correct order is 1,2,4,3,5: below the top panel there are really two
+        // columns, right = {sliver, rightLower} stacked and left = {leftUpper, leftLower} stacked, and
+        // manga reads the right column fully before the left column. These approximated coordinates
+        // don't reproduce the original mis-ordering (the horizontal cut already fails here for other
+        // reasons), so this pins the confirmed-correct behavior rather than proving the fix, but it
+        // guards the same column-layout shape as the case above.
+        val topPanel = PanelRect(0.0f, 0.0f, 1.0f, 0.6483f)
+        val sliver = PanelRect(0.5652f, 0.5466f, 1.0f, 0.6483f)
+        val leftUpper = PanelRect(0.0543f, 0.5551f, 0.6413f, 0.75f)
+        val rightLower = PanelRect(0.4837f, 0.6483f, 1.0f, 1.0f)
+        val leftLower = PanelRect(0.0163f, 0.75f, 0.5978f, 1.0f)
+
+        val shuffled = listOf(leftLower, rightLower, topPanel, leftUpper, sliver)
+        val ordered = PanelOrdering.order(shuffled, rightToLeft = true)
+
+        assertEquals(
+            listOf(topPanel, sliver, rightLower, leftUpper, leftLower),
+            ordered,
+        )
+    }
 }
