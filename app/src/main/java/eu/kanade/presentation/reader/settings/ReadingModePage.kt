@@ -12,8 +12,10 @@ import androidx.compose.runtime.getValue
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.ui.platform.LocalContext
+import eu.kanade.domain.manga.model.panelByPanelDirection
 import eu.kanade.domain.manga.model.readerOrientation
 import eu.kanade.domain.manga.model.readingMode
+import eu.kanade.tachiyomi.ui.reader.setting.PanelByPanelDirection
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderOrientation
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderSettingsViewModel
@@ -128,10 +130,25 @@ private fun ColumnScope.PanelByPanelViewerSettings(
         }
     }
 
-    CheckboxItem(
-        label = stringResource(MR.strings.pref_panel_by_panel_right_to_left),
-        pref = viewModel.preferences.panelByPanelRightToLeft,
-    )
+    val manga by viewModel.mangaFlow.collectAsState()
+    val globalRightToLeft by viewModel.preferences.panelByPanelRightToLeft.collectAsState()
+    val override = remember(manga) { PanelByPanelDirection.fromPreference(manga?.panelByPanelDirection?.toInt()) }
+    // The series may have no override yet (a fresh series falls back to the app-wide default), but
+    // the picker only offers the two concrete choices — selecting one always pins this series
+    // explicitly, same as every other per-series setting on this page.
+    val effectiveDirection = when (override) {
+        PanelByPanelDirection.DEFAULT -> if (globalRightToLeft) PanelByPanelDirection.RIGHT_TO_LEFT else PanelByPanelDirection.LEFT_TO_RIGHT
+        else -> override
+    }
+    SettingsChipRow(MR.strings.pref_panel_by_panel_right_to_left) {
+        listOf(PanelByPanelDirection.LEFT_TO_RIGHT, PanelByPanelDirection.RIGHT_TO_LEFT).map {
+            FilterChip(
+                selected = it == effectiveDirection,
+                onClick = { viewModel.onChangePanelByPanelDirection(it) },
+                label = { Text(stringResource(it.stringRes)) },
+            )
+        }
+    }
 
     CheckboxItem(
         label = stringResource(MR.strings.pref_panel_by_panel_show_full_page_intro),

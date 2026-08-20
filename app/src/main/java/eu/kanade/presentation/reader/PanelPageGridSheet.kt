@@ -4,6 +4,7 @@ import android.graphics.Bitmap
 import android.graphics.BitmapFactory
 import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.aspectRatio
@@ -14,11 +15,13 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.lazy.grid.GridCells
 import androidx.compose.foundation.lazy.grid.LazyVerticalGrid
 import androidx.compose.foundation.lazy.grid.items
+import androidx.compose.foundation.lazy.grid.rememberLazyGridState
 import androidx.compose.foundation.shape.RoundedCornerShape
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.produceState
 import androidx.compose.runtime.remember
@@ -44,9 +47,25 @@ fun PanelPageGridSheet(
     currentPageIndex: Int,
     onSelectPage: (Int) -> Unit,
     onDismissRequest: () -> Unit,
+    resolveDownloadedBytes: suspend (ReaderPage) -> ByteArray? = { null },
 ) {
+    // Opens scrolled to the current page's row instead of always starting at page 1, so jumping
+    // into the grid from deep in a chapter doesn't require scrolling to find where you are.
+    // GridCells.Adaptive's column count isn't known until the grid is actually measured, so seeding
+    // rememberLazyGridState's own initialFirstVisibleItemIndex guesses blind and can land one row
+    // off (it did — see git history). scrollToItem is layout-aware: called after composition, it
+    // resolves the item's real row against the grid's actual measured column count.
+    val startIndex = remember(pages, currentPageIndex) {
+        pages.indexOfFirst { it.index == currentPageIndex }.coerceAtLeast(0)
+    }
+    val gridState = rememberLazyGridState()
+    LaunchedEffect(startIndex) {
+        gridState.scrollToItem(startIndex)
+    }
+
     AdaptiveSheet(onDismissRequest = onDismissRequest) {
         LazyVerticalGrid(
+            state = gridState,
             columns = GridCells.Adaptive(minSize = 96.dp),
             modifier = Modifier
                 .fillMaxWidth()
@@ -61,6 +80,7 @@ fun PanelPageGridSheet(
                         onSelectPage(page.index)
                         onDismissRequest()
                     },
+                    resolveDownloadedBytes = resolveDownloadedBytes,
                 )
             }
         }
@@ -68,10 +88,15 @@ fun PanelPageGridSheet(
 }
 
 @Composable
-private fun PageGridCell(page: ReaderPage, isSelected: Boolean, onClick: () -> Unit) {
+private fun PageGridCell(
+    page: ReaderPage,
+    isSelected: Boolean,
+    onClick: () -> Unit,
+    resolveDownloadedBytes: suspend (ReaderPage) -> ByteArray?,
+) {
     val cacheKey = remember(page) { "${page.chapter.chapter.id}_${page.index}" }
     val thumbnail by produceState<Bitmap?>(initialValue = PanelPageThumbnailCache.get(cacheKey), key1 = cacheKey) {
-        value = PanelPageThumbnailCache.get(cacheKey) ?: decodePageThumbnail(page)?.also {
+        value = PanelPageThumbnailCache.get(cacheKey) ?: decodePageThumbnail(page, resolveDownloadedBytes)?.also {
             PanelPageThumbnailCache.put(cacheKey, it)
         }
     }
@@ -87,6 +112,13 @@ private fun PageGridCell(page: ReaderPage, isSelected: Boolean, onClick: () -> U
                     MaterialTheme.colorScheme.primary.copy(alpha = 0.3f)
                 } else {
                     MaterialTheme.colorScheme.surfaceContainerHighest
+                },
+            )
+            .then(
+                if (isSelected) {
+                    Modifier.border(2.dp, MaterialTheme.colorScheme.primary, RoundedCornerShape(8.dp))
+                } else {
+                    Modifier
                 },
             ),
         contentAlignment = Alignment.Center,
@@ -115,23 +147,41 @@ private fun PageGridCell(page: ReaderPage, isSelected: Boolean, onClick: () -> U
     }
 }
 
-private suspend fun decodePageThumbnail(page: ReaderPage): Bitmap? = withContext(Dispatchers.IO) {
+private suspend fun decodePageThumbnail(
+    page: ReaderPage,
+    resolveDownloadedBytes: suspend (ReaderPage) -> ByteArray?,
+): Bitmap? = withContext(Dispatchers.IO) {
+    val bytes = readPageBytes(page, resolveDownloadedBytes) ?: return@withContext null
+    try {
+        val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
+        if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext null
+        var sample = 1
+        while (max(bounds.outWidth, bounds.outHeight) / sample > THUMBNAIL_MAX_DIMENSION) sample *= 2
+        BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
+    } catch (e: Throwable) {
+        null
+    }
+}
+
+/**
+ * Prefers a fresh read of the downloaded chapter (via [resolveDownloadedBytes]) over [page]'s own
+ * loader when the page hasn't been fetched yet — a chapter opened before its download finished
+ * keeps the network loader it started with for the rest of the session (see
+ * [eu.kanade.tachiyomi.ui.reader.model.ReaderChapter.pageLoader]), so falling straight to it here
+ * would hit the source for pages the reader hasn't visited, risking rate limits on a chapter
+ * that's since finished downloading.
+ */
+private suspend fun readPageBytes(page: ReaderPage, resolveDownloadedBytes: suspend (ReaderPage) -> ByteArray?): ByteArray? {
     var streamFn = page.stream
     if (streamFn == null) {
+        resolveDownloadedBytes(page)?.let { return it }
         page.chapter.pageLoader?.loadPage(page)
         page.statusFlow.first { it == Page.State.Ready || it is Page.State.Error }
-        streamFn = page.stream ?: return@withContext null
+        streamFn = page.stream ?: return null
     }
-    try {
-        streamFn.invoke().use { input ->
-            val bytes = input.readBytes()
-            val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, bounds)
-            if (bounds.outWidth <= 0 || bounds.outHeight <= 0) return@withContext null
-            var sample = 1
-            while (max(bounds.outWidth, bounds.outHeight) / sample > THUMBNAIL_MAX_DIMENSION) sample *= 2
-            BitmapFactory.decodeByteArray(bytes, 0, bytes.size, BitmapFactory.Options().apply { inSampleSize = sample })
-        }
+    return try {
+        streamFn.invoke().use { it.readBytes() }
     } catch (e: Throwable) {
         null
     }

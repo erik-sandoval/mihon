@@ -142,13 +142,13 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
                     (holder.hasPanelStops() && (holder.canAdvancePanelStop() || holder.canRetreatPanelStop()))
                 )
         }
-        // Mirrors the LEFT/RIGHT tap zones: moveLeft()/moveRight() already step a panel stop when
-        // one's available in that direction and fall back to turning the page when it isn't. RTL
-        // panel-by-panel reads "forward" toward the left physically, so the physical swipe
-        // direction that means "step forward" flips relative to the LTR/tap-zone convention.
+        // moveLeft()/moveRight() already step a panel stop when one's available in that direction
+        // and fall back to turning the page when it isn't. Unlike the LEFT/RIGHT tap zones, the
+        // swipe gesture itself stays a fixed physical convention (swipe left = forward) regardless
+        // of the RTL/LTR setting — panel order already accounts for reading direction upstream (see
+        // PanelOrdering), so the swipe input only needs to mean "next stop" vs "previous stop".
         pager.panelSwipeListener = { leftward ->
-            val rtl = readerPreferences.panelByPanelRightToLeft.get()
-            if (leftward != rtl) moveLeft() else moveRight()
+            if (leftward) moveRight() else moveLeft()
         }
 
         config.dualPageSplitChangedListener = { enabled ->

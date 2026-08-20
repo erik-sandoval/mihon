@@ -93,6 +93,18 @@ class PanelPipelineTest {
     }
 
     @Test
+    fun ltrAndRtlUseTheSameMergeDivideProfile() {
+        // Panel-by-panel navigation should feel identical regardless of reading direction: a
+        // full-width, broad panel that the old grid-friendly LTR profile would have quartered
+        // must stay exactly one stop, same as it already does for RTL.
+        val panels = listOf(PanelRect(0.0f, 0.0f, 1.0f, 0.6f), PanelRect(0.0f, 0.65f, 1.0f, 1.0f))
+        val ltrRegions = PanelPipeline.zoomRegions(panels, emptyList(), 1000, 1500, rightToLeft = false)
+        val rtlRegions = PanelPipeline.zoomRegions(panels, emptyList(), 1000, 1500, rightToLeft = true)
+        assertEquals(2, ltrRegions.size)
+        assertEquals(rtlRegions.size, ltrRegions.size)
+    }
+
+    @Test
     fun panelWithNoOverflowingBubbleOnlyGetsTheBaseMargin() {
         // Both panels are deliberately >10% area so neither is a merge candidate, keeping this a
         // pure padding test rather than exercising the planner's merge/divide behavior too. `other`
@@ -131,7 +143,7 @@ class PanelPipelineTest {
         val viaPipeline = PanelPipeline.zoomRegions(shuffled, bubbles, 1000, 1500, rightToLeft = false)
         val manual = PanelPlanner.plan(
             PanelOrdering.order(shuffled, rightToLeft = false),
-            bubbles, 1000, 1500, rightToLeft = false,
+            bubbles, 1000, 1500, rightToLeft = false, config = PanelPlanner.Config.MANGA,
         )
         // The pipeline is ordering → planning → a small outward pad (breathing room for overflowing
         // text). So it must keep the same count and order, and each region must CONTAIN its planned

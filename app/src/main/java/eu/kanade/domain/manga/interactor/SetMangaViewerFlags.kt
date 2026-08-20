@@ -1,6 +1,7 @@
 package eu.kanade.domain.manga.interactor
 
 import dev.zacsweers.metro.Inject
+import eu.kanade.tachiyomi.ui.reader.setting.PanelByPanelDirection
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderOrientation
 import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
 import tachiyomi.domain.manga.model.MangaUpdate
@@ -27,6 +28,16 @@ class SetMangaViewerFlags(
             MangaUpdate(
                 id = id,
                 viewerFlags = manga.viewerFlags.setFlag(flag, ReaderOrientation.MASK.toLong()),
+            ),
+        )
+    }
+
+    suspend fun awaitSetPanelByPanelDirection(id: Long, flag: Long) {
+        val manga = mangaRepository.getMangaById(id)
+        mangaRepository.update(
+            MangaUpdate(
+                id = id,
+                viewerFlags = manga.viewerFlags.setFlag(flag, PanelByPanelDirection.MASK.toLong()),
             ),
         )
     }

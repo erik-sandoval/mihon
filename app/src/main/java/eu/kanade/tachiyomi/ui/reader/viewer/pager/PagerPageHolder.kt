@@ -145,8 +145,9 @@ class PagerPageHolder(
             directionJob = scope.launch {
                 // Skip the initial replay: it fires before the page has even loaded (panelImageBytes
                 // is still null then), so it would be a redundant no-op racing the first natural
-                // detect call from loadPanels() — only react to an actual later toggle.
-                viewer.readerPreferences.panelByPanelRightToLeft.changes().drop(1).collectLatest {
+                // detect call from loadPanels() — only react to an actual later toggle (of either
+                // the per-series override or the app-wide default it falls back to).
+                viewer.panelDirectionFlow.drop(1).collectLatest {
                     val imageBytes = panelImageBytes ?: return@collectLatest
                     try {
                         loadPanels(viewer, imageBytes, anchorRect = currentPanelStopRect())

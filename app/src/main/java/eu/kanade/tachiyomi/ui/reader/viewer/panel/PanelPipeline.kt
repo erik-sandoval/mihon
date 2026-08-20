@@ -37,9 +37,10 @@ object PanelPipeline {
     ): List<PanelRect> {
         // Add any large, roughly-rectangular region the model left uncovered as a panel, so missed
         // panels get numbered too — then order and plan as usual.
-        // Manga (read right-to-left) is paced panel-by-panel, so it uses a profile that merges far
-        // less aggressively; Western LTR comics keep the default grid-friendly merging.
-        val config = if (rightToLeft) PanelPlanner.Config.MANGA else PanelPlanner.Config()
+        // Panel-by-panel is paced one beat at a time regardless of reading direction, so both LTR
+        // and RTL comics use the gentle manga profile: only truly tiny panels merge, and panels are
+        // never further divided (see [PanelPlanner.Config.MANGA]).
+        val config = PanelPlanner.Config.MANGA
         val isSpread = pageW.toFloat() / pageH.toFloat() >= SPREAD_ASPECT_MIN
         val filled = PanelGapFiller.fill(panels)
         val ordered = PanelOrdering.order(filled, rightToLeft, isSpread)

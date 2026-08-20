@@ -13,6 +13,7 @@ class ReaderSettingsViewModel(
     readerState: StateFlow<ReaderViewModel.State>,
     val onChangeReadingMode: (ReadingMode) -> Unit,
     val onChangeOrientation: (ReaderOrientation) -> Unit,
+    val onChangePanelByPanelDirection: (PanelByPanelDirection) -> Unit,
     val preferences: ReaderPreferences,
 ) : ViewModel() {
 

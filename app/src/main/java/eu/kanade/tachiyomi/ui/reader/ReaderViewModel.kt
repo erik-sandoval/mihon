@@ -20,6 +20,7 @@ import eu.kanade.domain.base.BasePreferences
 import eu.kanade.domain.chapter.model.toDbChapter
 import eu.kanade.domain.manga.interactor.SetMangaViewerFlags
 import eu.kanade.domain.manga.interactor.UpdateManga
+import eu.kanade.domain.manga.model.panelByPanelDirection
 import eu.kanade.domain.manga.model.readerOrientation
 import eu.kanade.domain.manga.model.readingMode
 import eu.kanade.domain.source.interactor.GetIncognitoState
@@ -43,6 +44,7 @@ import eu.kanade.tachiyomi.ui.reader.model.InsertPage
 import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
+import eu.kanade.tachiyomi.ui.reader.setting.PanelByPanelDirection
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderOrientation
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
@@ -663,6 +665,41 @@ class ReaderViewModel(
 
     fun getSource() = manga?.source?.let { sourceManager.getOrStub(it) } as? HttpSource
 
+    /**
+     * Reads [page] straight from the downloaded chapter on disk, even if [page]'s own chapter is
+     * still using the loader it was assigned when the reader session started. A chapter opened
+     * before its download finished keeps that original (network) loader for the rest of the
+     * session, since [ReaderChapter] never re-resolves it — so anything that requests pages the
+     * reader hasn't visited yet, like the page grid's thumbnails, would otherwise keep hitting the
+     * source for a chapter that's since finished downloading, risking rate limits. Returns null if
+     * the chapter isn't downloaded or the page can't be read locally.
+     */
+    suspend fun downloadedPageBytes(page: ReaderPage): ByteArray? {
+        val manga = manga ?: return null
+        val dbChapter = page.chapter.chapter
+        val isDownloaded = downloadManager.isChapterDownloaded(
+            dbChapter.name,
+            dbChapter.scanlator,
+            dbChapter.url,
+            manga.title,
+            manga.source,
+            skipCache = true,
+        )
+        if (!isDownloaded) return null
+        val source = sourceManager.getOrStub(manga.source)
+        val loader = DownloadPageLoader(page.chapter, manga, source, downloadManager, downloadProvider)
+        return try {
+            val freshPage = loader.getPages().getOrNull(page.index) ?: return null
+            loader.loadPage(freshPage)
+            freshPage.statusFlow.first { it == Page.State.Ready || it is Page.State.Error }
+            freshPage.stream?.invoke()?.use { it.readBytes() }
+        } catch (e: Throwable) {
+            null
+        } finally {
+            loader.recycle()
+        }
+    }
+
     fun getChapterUrl(): String? {
         val sChapter = getCurrentChapter()?.chapter ?: return null
         val source = getSource() ?: return null
@@ -767,6 +804,34 @@ class ReaderViewModel(
                     )
                 }
                 eventChannel.send(Event.SetOrientation(getMangaOrientation()))
+                eventChannel.send(Event.ReloadViewerChapters)
+            }
+        }
+    }
+
+    /**
+     * Updates the panel-by-panel reading direction override for the open manga. [PanelByPanelDirection.DEFAULT]
+     * clears the override, falling back to [ReaderPreferences.panelByPanelRightToLeft].
+     */
+    fun setMangaPanelByPanelDirection(direction: PanelByPanelDirection) {
+        val manga = manga ?: return
+        viewModelScope.launchIO {
+            setMangaViewerFlags.awaitSetPanelByPanelDirection(manga.id, direction.flagValue.toLong())
+            // Any state.manga change makes ReaderActivity tear down and recreate the viewer (see
+            // its state.map { it.manga }.distinctUntilChanged().onEach { updateViewer() }
+            // subscription), so the reload below isn't optional — without it the freshly recreated
+            // viewer is left with no chapters/pages in it at all.
+            val currChapters = state.value.viewerChapters
+            if (currChapters != null) {
+                val currChapter = currChapters.currChapter
+                currChapter.requestedPage = currChapter.chapter.last_page_read
+
+                mutableState.update {
+                    it.copy(
+                        manga = getManga.await(manga.id),
+                        viewerChapters = currChapters,
+                    )
+                }
                 eventChannel.send(Event.ReloadViewerChapters)
             }
         }

@@ -265,6 +265,7 @@ class ReaderActivity : BaseActivity() {
                 readerState = viewModel.state,
                 onChangeReadingMode = viewModel::setMangaReadingMode,
                 onChangeOrientation = viewModel::setMangaOrientationType,
+                onChangePanelByPanelDirection = viewModel::setMangaPanelByPanelDirection,
                 preferences = readerPreferences,
             )
         }
@@ -389,9 +390,13 @@ class ReaderActivity : BaseActivity() {
                 if (pages != null) {
                     PanelPageGridSheet(
                         pages = pages,
-                        currentPageIndex = state.currentPage,
+                        // state.currentPage is the 1-based page NUMBER (used for the "137/531"
+                        // display); ReaderPage.index — what the grid keys and highlights against —
+                        // is 0-based.
+                        currentPageIndex = state.currentPage - 1,
                         onSelectPage = ::moveToPageIndex,
                         onDismissRequest = onDismissRequest,
+                        resolveDownloadedBytes = viewModel::downloadedPageBytes,
                     )
                 }
             }

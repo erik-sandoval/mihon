@@ -33,16 +33,18 @@ class MlPanelBoundaryDetector private constructor(
 
     private val decoder = YoloPanelDecoder(inputSize = inputSize)
 
-    fun detect(page: Bitmap, rightToLeft: Boolean): List<PanelRect> = synchronized(lock) {
+    fun detect(page: Bitmap, rightToLeft: Boolean, label: String = ""): List<PanelRect> = synchronized(lock) {
         val result = try {
             run(page)
         } catch (t: Throwable) {
             logcat(LogPriority.ERROR, t) { "ML panel inference failed" }
             DetectResult(emptyList(), emptyList(), page.width, page.height)
         }
+        logcat { "panelDebug [$label] ${result.pageW}x${result.pageH} raw panels=${result.panels} bubbles=${result.bubbles}" }
         val planned = PanelPipeline.zoomRegions(
             result.panels, result.bubbles, result.pageW, result.pageH, rightToLeft,
         )
+        logcat { "panelDebug [$label] ${result.pageW}x${result.pageH} planned=$planned" }
         if (planned.size < 2) listOf(PanelRect.FULL_PAGE) else planned
     }
 

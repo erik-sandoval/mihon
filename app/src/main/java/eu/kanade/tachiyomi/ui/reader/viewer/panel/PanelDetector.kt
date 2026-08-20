@@ -8,6 +8,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
 import kotlinx.coroutines.withTimeoutOrNull
 import okio.Buffer
+import tachiyomi.core.common.util.system.logcat
 import java.security.MessageDigest
 import kotlin.math.max
 
@@ -30,8 +31,9 @@ class PanelDetector(
             panelCacheRepository.get(chapterId, page.index, hash, version)
         }?.let { return it.panels }
 
+        val label = "${page.chapter.chapter.name}#${page.index}#$direction"
         val timedOutOrPanels = withTimeoutOrNull(DETECTION_BUDGET_MS) {
-            withContext(Dispatchers.Default) { runDetection(imageBytes, direction) }
+            withContext(Dispatchers.Default) { runDetection(imageBytes, direction, label) }
         }
         val panels = timedOutOrPanels ?: listOf(Panel(PanelRect.FULL_PAGE))
 
@@ -50,7 +52,7 @@ class PanelDetector(
 
     private fun cacheVersion(direction: PanelDirection): Int = DETECTOR_VERSION * 10 + direction.ordinal
 
-    private suspend fun runDetection(imageBytes: Buffer, direction: PanelDirection): List<Panel> {
+    private suspend fun runDetection(imageBytes: Buffer, direction: PanelDirection, label: String): List<Panel> {
         val detector = mlDetector ?: return listOf(Panel(PanelRect.FULL_PAGE))
 
         val bounds = BitmapFactory.Options().apply { inJustDecodeBounds = true }
@@ -64,7 +66,7 @@ class PanelDetector(
             BitmapFactory.Options().apply { inSampleSize = sample },
         ) ?: return listOf(Panel(PanelRect.FULL_PAGE))
 
-        val rects = detector.detect(smallBitmap, rightToLeft = direction == PanelDirection.RTL)
+        val rects = detector.detect(smallBitmap, rightToLeft = direction == PanelDirection.RTL, label = label)
         smallBitmap.recycle()
 
         // Sub-stops (multiple zoom stops within one wide panel) aren't used here: the ML pipeline's
@@ -92,6 +94,6 @@ class PanelDetector(
     companion object {
         private const val DETECTION_BUDGET_MS = 2000L
         private const val MAX_DETECTION_DIMENSION = 900
-        private const val DETECTOR_VERSION = 30
+        private const val DETECTOR_VERSION = 34
     }
 }

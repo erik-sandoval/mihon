@@ -63,9 +63,9 @@ class ReaderPreferences(
     )
 
     /**
-     * Panel-by-panel navigation order. Unlike [ReadingMode.LEFT_TO_RIGHT]/[ReadingMode.RIGHT_TO_LEFT],
-     * [ReadingMode.PANEL_BY_PANEL] is a single mode with no direction of its own, so this is tracked
-     * separately. Defaults to right-to-left to match typical manga.
+     * App-wide default for panel-by-panel navigation order, used when a series has no
+     * [PanelByPanelDirection] override of its own (see [eu.kanade.domain.manga.model.panelByPanelDirection]).
+     * Defaults to right-to-left to match typical manga.
      */
     val panelByPanelRightToLeft: Preference<Boolean> = preferenceStore.getBoolean(
         "pref_panel_by_panel_right_to_left",
