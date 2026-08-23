@@ -29,6 +29,18 @@ viewModel.state
 
 Real incident: `PanelByPanelDirection` (per-series panel-by-panel RTL/LTR override) was added without this reload call. Toggling it while reading silently detached the current page's view and never reattached it. Confirmed via logcat: `state.manga updated` was followed within ~10ms by `PagerPageHolder.onDetachedFromWindow` for the visible pages, with nothing recreating them afterward.
 
+## Panel-by-panel current-panel state does not survive rotation without explicit restore plumbing
+
+Rotating the device recreates the Activity (and with it `PagerViewer`) — a different trigger than the `state.manga` teardown above (configuration change, not a manga-model change), but the same class of "viewer gets rebuilt from scratch" problem. Confirmed bug: rotating away and back while mid-panel (e.g. page 5, panel 4) landed back on panel 1 of that page instead of resuming where you were.
+
+Established fix pattern, now in place:
+- `PagerPageHolder`'s panel-stop callback only persists state for the page actually on screen: `onPanelStopChanged = { index -> if (viewer.isCurrentReaderPage(page)) viewModel.savePanelStop(page.index, index) }`. Without the `isCurrentReaderPage` gate, a non-visible/recycled holder (e.g. an offscreen-prefetched neighbor) can clobber the saved stop for the page that's actually visible.
+- `Viewer.moveToPage(page, forceEnterForward: Boolean = false)` and `PagerViewer`'s `forceForwardOnNextPageChange` field distinguish "resume at the last saved panel" (default, used by rotation restore) from "enter fresh at panel 1" (`forceEnterForward = true`, used by page-grid selection — see below). Any future "jump to a page" entry point needs to pick the right one of these explicitly rather than relying on the default.
+
+## Page-grid ("show all pages") selection must force forward-entry
+
+`ReaderActivity`'s `onSelectPage` (wired to `PanelPageGridSheet`) must call `moveToPageIndex(index, forceEnterForward = true)`, not the bare default. Confirmed bug without the flag: selecting a page from the grid could land the panel-by-panel viewer in "full page" view — as if you'd already stepped through all its panels — instead of starting at panel 1, because `moveToPage` without `forceEnterForward` preserves whatever panel-stop was previously saved for that page/position rather than starting fresh (same plumbing as the rotation-restore case above, used the opposite way here). Any new "jump to an arbitrary page" entry point (search result, bookmark jump, etc.) should default to `forceEnterForward = true` unless it specifically wants to resume a previous panel-stop.
+
 ## Panel-by-panel swipe direction is a fixed physical gesture, not RTL-aware
 
 In `PagerViewer.kt`, the panel-by-panel swipe listener is intentionally **not** conditioned on RTL/LTR:
@@ -62,6 +74,12 @@ This was missed repeatedly in one session — each time, a real code fix was shi
 The same bump is also the way to get **fresh evidence** for a page already visited — not just to ship a fix. If you're adding temporary debug logging (e.g. in `PanelPipeline`) to see the real detected coordinates for a specific failing page, a cache hit skips the whole pipeline (including your new log lines) and just returns the previously-cached panel list — bump `DETECTOR_VERSION` *before* asking the user to revisit that page, or the logs won't fire at all and you'll wrongly conclude nothing happened.
 
 **A bump for evidence-gathering does *not* also cover the fix that follows it — that fix needs its own, separate bump.** Got this wrong in a live session: bumped once to force fresh detection so debug logging would fire, had the user revisit the page (which — running the *old*, still-buggy pipeline, just now with logging attached — wrote a fresh cache entry under that same bumped version, still holding the wrong order), then implemented the real fix afterward without bumping again. Pushed and asked the user to verify; they'd have just gotten the same cached-wrong result back, because that visit's cache entry already existed under the current version. The rule from the section above ("bump in the same commit/build as the pipeline change") still applies even when an earlier bump *already happened this session* for a different reason — each pipeline-output-changing event (an evidence-gathering visit that runs the old code, and later the actual fix) needs to invalidate whatever the previous one cached. Don't treat "I already bumped this recently" as covering a change made after that bump.
+
+## PanelOrdering's recursive X-Y cut needs both start and end coordinates as cut-candidate lines
+
+Confirmed bug in `PanelOrdering.kt`: `findCut`'s candidate cut-line generation only used panels' trailing edges (`panels.map(end).distinct().sorted()`) as places to split the recursive X-Y cut. This missed the correct cut on a real page (Official Bleach ch.16 p5): a narrow bottom-right panel that *starts* to the left of its column-mate (but shares the same end edge) needs a cut candidate at its start, not just its end, to be grouped into the correct column — without it, reading order came out `1,2,3,4,5,6` instead of the correct `1,3,2,4,5,6`. Fixed by unioning both: `(panels.map(end) + panels.map(start)).distinct().sorted()`.
+
+If reading order comes out wrong for a page with panels of uneven start position within what should be a "column," check whether the candidate-line set is missing a start-edge cut before assuming the ordering heuristic itself is flawed. Regression-tested in `PanelOrderingTest.kt` with the exact captured coordinates from that page (`narrowRightColumnPanelStartingLeftOfItsColumnmateStillReadsAsAColumn`). Any change here also needs a `DETECTOR_VERSION` bump (see below) — this class of fix is easy to ship and then have look like "did nothing" purely because a previously-visited page is still serving its old cached order.
 
 ## Panel overlap/split heuristics: known open issue, approaches already tried and reverted
 
