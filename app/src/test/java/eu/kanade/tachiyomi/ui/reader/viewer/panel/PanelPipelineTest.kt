@@ -131,6 +131,26 @@ class PanelPipelineTest {
     }
 
     @Test
+    fun bubbleStraddlingGutterBetweenTwoPanelsIsShownWholeByBoth() {
+        // Regression from a real on-device page (Official Bleach ch.17 p16): a "COME IN FOR A
+        // MINUTE, OKAY?" bubble sits in the narrow gutter between two panels, its centre landing
+        // in neither panel's raw box (cx=0.4582, between the left panel's raw right edge 0.4498
+        // and the right panel's raw left edge 0.4610). Before the fix, neither panel claimed it,
+        // so the shared cut line ran straight through the bubble instead of either panel showing
+        // it whole.
+        val rightPanel = PanelRect(0.46095777f, 0.093161315f, 0.9081674f, 0.30152285f)
+        val leftPanel = PanelRect(0.07759259f, 0.09368136f, 0.44976175f, 0.30146083f)
+        val bubble = PanelRect(0.41516086f, 0.1693387f, 0.5012333f, 0.25637332f)
+        val regions = PanelPipeline.zoomRegions(
+            listOf(rightPanel, leftPanel), listOf(bubble), 1000, 1000, rightToLeft = true,
+        )
+        val right = regions.first { it.left > 0.3f }
+        val left = regions.first { it.left < 0.3f }
+        assertTrue(right.left <= bubble.left, "right panel should grow to include the full bubble: $right")
+        assertTrue(left.right >= bubble.right, "left panel should grow to include the full bubble: $left")
+    }
+
+    @Test
     fun pipelineMatchesOrderingThenPlanning() {
         val shuffled = listOf(
             PanelRect(0.55f, 0.5f, 1.0f, 1.0f),

@@ -128,6 +128,7 @@ object PanelPlanner {
                 if (candidate.width > config.maxMergedWidthFraction ||
                     candidate.height > config.maxMergedHeightFraction
                 ) break
+                if (swallowsUnrelatedPanel(candidate, ordered, i, j + 1)) break
                 union = candidate
                 j++
                 count++
@@ -137,6 +138,21 @@ object PanelPlanner {
         }
         return regions
     }
+
+    /**
+     * A merge candidate's union is an axis-aligned bounding box; when the two panels being merged
+     * sit diagonally from each other rather than sharing a clean edge (confirmed via logcat on
+     * Official Bleach ch.6 p17: a small top panel merged with a small, narrow strip lower down and
+     * to the side), that box can span space actually occupied by a third panel that was never part
+     * of the merge — the union silently swallows it even though a later, separate stop then zooms
+     * into that same panel again on its own. Reject the merge step whenever the candidate box
+     * overlaps any panel outside the group being merged (indices [from]..[to] inclusive).
+     */
+    private fun swallowsUnrelatedPanel(candidate: PanelRect, ordered: List<PanelRect>, from: Int, to: Int): Boolean =
+        ordered.withIndex().any { (idx, p) -> idx !in from..to && rectsOverlap(candidate, p) }
+
+    private fun rectsOverlap(a: PanelRect, b: PanelRect) =
+        a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top
 
     /** Whether a (non-merged) panel should be split, and which rule applies, is decided here. */
     private fun shouldDivide(p: PanelRect, pageAspect: Float, c: Config): Boolean {

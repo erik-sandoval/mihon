@@ -197,6 +197,33 @@ class PanelPlannerTest {
     }
 
     @Test
+    fun mergeNeverProducesARegionThatOverlapsAnUnrelatedPanel() {
+        // Regression from a real on-device page (Official Bleach ch.6 p17): a small top panel
+        // ("GONE... HE'S GONE") and a small, narrow strip lower down and to the side ("ANYWAY...
+        // YOUR WOUNDS...") are adjacent-and-stacked enough to be a merge candidate, but their
+        // union's bounding box spans right over a THIRD, unrelated panel ("I HAVE TONS OF
+        // QUESTIONS...") sitting in the gap between them. Before the fix, that third panel's own
+        // separate stop showed content already covered by the merged region's box — a confusing
+        // "zoom into the cluster, then back into part of it" reading order.
+        val whoosh = PanelRect(3.0066684E-4f, 2.535656E-4f, 0.9637384f, 0.2687282f)
+        val ichigoScene = PanelRect(0.5289519f, 0.26408723f, 0.96373814f, 0.6866497f)
+        val gonePanel = PanelRect(0.13654147f, 0.27576622f, 0.5151923f, 0.3981092f)
+        val anywayStrip = PanelRect(0.42395264f, 0.42092198f, 0.51522833f, 0.68561816f)
+        val questionsPanel = PanelRect(0.1399281f, 0.4211803f, 0.40967435f, 0.68532526f)
+        val roAskYou = PanelRect(0.011073196f, 0.7076822f, 0.9656016f, 1.0f)
+        val ordered = listOf(whoosh, ichigoScene, gonePanel, anywayStrip, questionsPanel, roAskYou)
+
+        val result = PanelPlanner.plan(ordered, emptyList(), pageW, pageH, rightToLeft = true, config = PanelPlanner.Config.MANGA)
+
+        for (region in result) {
+            if (region == questionsPanel) continue
+            val overlaps = region.left < questionsPanel.right && region.right > questionsPanel.left &&
+                region.top < questionsPanel.bottom && region.bottom > questionsPanel.top
+            assertTrue(!overlaps, "region $region should not swallow the unrelated questions panel $questionsPanel")
+        }
+    }
+
+    @Test
     fun mangaProfileNeverDividesEvenAFullWidthBroadPanel() {
         // Same shape as fullWidthBroadPanelSplitsIntoFour, which the default profile quarters —
         // the manga profile must keep it as a single stop.

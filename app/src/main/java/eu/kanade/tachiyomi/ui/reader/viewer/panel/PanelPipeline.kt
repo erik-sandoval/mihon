@@ -73,25 +73,44 @@ object PanelPipeline {
      * and only by as much as that specific bubble needs. Bubble growth is intentionally NOT capped
      * by neighbour distance — a bubble genuinely bleeding into a neighbour's territory still needs
      * to be shown whole.
+     *
+     * A bubble that straddles the narrow gutter between two panels can have its centre fall inside
+     * *neither* panel's raw box — confirmed via logcat on Official Bleach ch.17 p16: a "COME IN FOR
+     * A MINUTE" bubble's centre sat in the ~1%-of-page-width gap between two panels' raw edges, so
+     * neither panel claimed it, neither grew to include it, and the shared cut line ran straight
+     * through it. [unclaimedBubbles] falls back to "does it overlap this panel's raw box at all" for
+     * that case only, so at least one adjacent panel grows to show it whole; a bubble with a clear
+     * single owner (the normal case) is unaffected.
      */
-    private fun pad(panels: List<PanelRect>, bubbles: List<PanelRect>): List<PanelRect> = panels.map { p ->
-        var left = p.left - marginLeft(p, panels)
-        var top = p.top - marginTop(p, panels)
-        var right = p.right + marginRight(p, panels)
-        var bottom = p.bottom + marginBottom(p, panels)
+    private fun pad(panels: List<PanelRect>, bubbles: List<PanelRect>): List<PanelRect> {
+        val unclaimed = unclaimedBubbles(panels, bubbles)
+        return panels.map { p ->
+            var left = p.left - marginLeft(p, panels)
+            var top = p.top - marginTop(p, panels)
+            var right = p.right + marginRight(p, panels)
+            var bottom = p.bottom + marginBottom(p, panels)
 
-        for (b in bubbles) {
-            if (b.centerX !in p.left..p.right || b.centerY !in p.top..p.bottom) continue
-            val clearanceX = b.width * BUBBLE_CLEARANCE
-            val clearanceY = b.height * BUBBLE_CLEARANCE
-            left = min(left, b.left - clearanceX)
-            top = min(top, b.top - clearanceY)
-            right = max(right, b.right + clearanceX)
-            bottom = max(bottom, b.bottom + clearanceY)
+            for (b in bubbles) {
+                val owns = (b.centerX in p.left..p.right && b.centerY in p.top..p.bottom) ||
+                    (b in unclaimed && overlaps(p, b))
+                if (!owns) continue
+                val clearanceX = b.width * BUBBLE_CLEARANCE
+                val clearanceY = b.height * BUBBLE_CLEARANCE
+                left = min(left, b.left - clearanceX)
+                top = min(top, b.top - clearanceY)
+                right = max(right, b.right + clearanceX)
+                bottom = max(bottom, b.bottom + clearanceY)
+            }
+
+            PanelRect(left.coerceAtLeast(0f), top.coerceAtLeast(0f), right.coerceAtMost(1f), bottom.coerceAtMost(1f))
         }
-
-        PanelRect(left.coerceAtLeast(0f), top.coerceAtLeast(0f), right.coerceAtMost(1f), bottom.coerceAtMost(1f))
     }
+
+    private fun unclaimedBubbles(panels: List<PanelRect>, bubbles: List<PanelRect>): List<PanelRect> =
+        bubbles.filterNot { b -> panels.any { b.centerX in it.left..it.right && b.centerY in it.top..it.bottom } }
+
+    private fun overlaps(p: PanelRect, b: PanelRect) =
+        b.left < p.right && b.right > p.left && b.top < p.bottom && b.bottom > p.top
 
     /**
      * [BASE_MARGIN] scales with a panel's own size, so a panel that's most of the page next to a

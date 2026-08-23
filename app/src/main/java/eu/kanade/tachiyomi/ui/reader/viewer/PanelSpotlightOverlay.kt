@@ -51,7 +51,7 @@ class PanelSpotlightOverlay(context: Context) : View(context) {
 
     private val debugPaint = Paint().apply {
         style = Paint.Style.STROKE
-        strokeWidth = 14f
+        strokeWidth = 4f
         isAntiAlias = true
     }
 
