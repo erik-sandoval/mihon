@@ -246,9 +246,10 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
     }
 
     /**
-     * Tells this viewer to move to the given [page].
+     * Tells this viewer to move to the given [page]. [forceEnterForward] doesn't apply here — this
+     * is a continuous-scroll viewer with no panel-entry direction to override.
      */
-    override fun moveToPage(page: ReaderPage) {
+    override fun moveToPage(page: ReaderPage, forceEnterForward: Boolean) {
         val position = adapter.items.indexOf(page)
         if (position != -1) {
             layoutManager.scrollToPositionWithOffset(position, 0)

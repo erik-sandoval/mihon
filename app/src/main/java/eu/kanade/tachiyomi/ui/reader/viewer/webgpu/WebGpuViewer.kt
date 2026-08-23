@@ -1176,8 +1176,9 @@ open class WebGpuViewer(
     /**
      * Tells this viewer to move to the given [page].
      * In dual page mode, aligns to the start of the spread containing the page.
+     * [forceEnterForward] doesn't apply here — this viewer has no panel-by-panel entry direction.
      */
-    override fun moveToPage(page: ReaderPage) {
+    override fun moveToPage(page: ReaderPage, forceEnterForward: Boolean) {
         // Get the page and align to spread anchor based on image position
         moveToPage(getSpreadAnchor(getPage(page)))
     }

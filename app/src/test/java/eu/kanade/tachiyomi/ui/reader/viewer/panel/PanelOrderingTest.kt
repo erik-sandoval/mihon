@@ -209,4 +209,34 @@ class PanelOrderingTest {
             ordered,
         )
     }
+
+    @Test
+    fun narrowRightColumnPanelStartingLeftOfItsColumnmateStillReadsAsAColumn() {
+        // Real detected coordinates (Bleach ch.16 p5, captured via on-device logcat). Top tier: a
+        // small top-right panel (weakPanel) and a small bottom-right panel (whyPanel) stack in the
+        // right column beside a tall left panel (bigLeft) that spans the tier's full height. The
+        // vertical cut at bigLeft's own right edge (0.591) fails: whyPanel starts at 0.539, so it
+        // straddles that line by ~14% of its own width — just over STRADDLE_TOLERANCE (12%) — so
+        // *no* candidate line generated from panels' trailing (right) edges alone produces a clean
+        // split, and it falls through to the row-clustering fallback, which wrongly groups
+        // weakPanel+bigLeft into "one row" (both start at y≈0) ahead of whyPanel. The real column
+        // boundary only appears if a candidate line can come from a panel's *leading* (left) edge
+        // too: a line at whyPanel's own left edge (0.539) cleanly separates bigLeft (fully left of
+        // it) from {weakPanel, whyPanel} (both starting at/right of it) with zero/minimal straddle.
+        // Confirmed correct order by the user reading the actual page.
+        val weakPanel = PanelRect(0.56613034f, 6.948635E-4f, 0.9098263f, 0.19701718f)
+        val whyPanel = PanelRect(0.53871083f, 0.21997118f, 0.90792537f, 0.42774028f)
+        val bigLeft = PanelRect(0.009460593f, 7.88033E-4f, 0.59116167f, 0.4254894f)
+        val hehBanner = PanelRect(0.07037712f, 0.4396067f, 0.91125137f, 0.54969484f)
+        val firstOfAll = PanelRect(0.1525044f, 0.5342558f, 0.9107394f, 0.99882585f)
+        val whoom = PanelRect(4.7250715E-4f, 0.5681999f, 0.18487096f, 0.99869436f)
+
+        val shuffled = listOf(bigLeft, whyPanel, weakPanel, firstOfAll, whoom, hehBanner)
+        val ordered = PanelOrdering.order(shuffled, rightToLeft = true)
+
+        assertEquals(
+            listOf(weakPanel, whyPanel, bigLeft, hehBanner, firstOfAll, whoom),
+            ordered,
+        )
+    }
 }

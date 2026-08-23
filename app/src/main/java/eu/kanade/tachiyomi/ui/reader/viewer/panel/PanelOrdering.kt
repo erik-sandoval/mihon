@@ -117,15 +117,23 @@ object PanelOrdering {
     /**
      * Tries to split [panels] into two non-empty groups along one axis. [vertical] = false cuts
      * horizontally (returns top group, bottom group); true cuts vertically (left group, right group).
-     * Scans candidate cut lines (panel trailing edges); a line is valid only if every panel sits on
-     * one side or straddles by at most [STRADDLE_TOLERANCE] of its length. Returns null if no line works.
+     * Scans candidate cut lines (panel leading *and* trailing edges — see below); a line is valid
+     * only if every panel sits on one side or straddles by at most [STRADDLE_TOLERANCE] of its
+     * length. Returns null if no line works.
+     *
+     * Trailing (end) edges alone aren't always enough: real page (Bleach ch.16 p5) — a narrow
+     * right-column panel starting well left of its column-mate, beside a tall left panel — has no
+     * valid trailing-edge candidate at all (the narrow panel straddles every one of them by just
+     * over [STRADDLE_TOLERANCE]), but a line at that narrow panel's own *leading* edge separates
+     * the columns cleanly. Confirmed correct order by the user reading the actual page; see
+     * `narrowRightColumnPanelStartingLeftOfItsColumnmateStillReadsAsAColumn` in `PanelOrderingTest`.
      */
     private fun findCut(panels: List<PanelRect>, vertical: Boolean): Pair<List<PanelRect>, List<PanelRect>>? {
         val start = { p: PanelRect -> if (vertical) p.left else p.top }
         val end = { p: PanelRect -> if (vertical) p.right else p.bottom }
 
         val maxEnd = panels.maxOf(end)
-        val candidates = panels.map(end).distinct().sorted()
+        val candidates = (panels.map(end) + panels.map(start)).distinct().sorted()
         for (line in candidates) {
             if (line >= maxEnd) continue // wouldn't leave anything below/right
             val first = mutableListOf<PanelRect>()  // top (or left) side

@@ -19,8 +19,8 @@ class WebGpuViewerContinuous(activity: ReaderActivity) :
 
     override fun moveLeft() = scrollByHalfPage(-1)
 
-    override fun moveToPage(page: ReaderPage) {
-        super.moveToPage(page)
+    override fun moveToPage(page: ReaderPage, forceEnterForward: Boolean) {
+        super.moveToPage(page, forceEnterForward)
         (pager as ImageViewContinuous).state.scrollY = 0f
     }
 }

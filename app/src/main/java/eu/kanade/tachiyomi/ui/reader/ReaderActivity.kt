@@ -394,7 +394,11 @@ class ReaderActivity : BaseActivity() {
                         // display); ReaderPage.index — what the grid keys and highlights against —
                         // is 0-based.
                         currentPageIndex = state.currentPage - 1,
-                        onSelectPage = ::moveToPageIndex,
+                        // An explicit jump from the page grid should always start that page from
+                        // its first panel — not whatever the normal forward/backward heuristic
+                        // would decide, which reads "target sits earlier in the chapter than
+                        // where the reader currently is" as entering backward (last panel).
+                        onSelectPage = { index -> moveToPageIndex(index, forceEnterForward = true) },
                         onDismissRequest = onDismissRequest,
                         resolveDownloadedBytes = viewModel::downloadedPageBytes,
                     )
@@ -733,11 +737,11 @@ class ReaderActivity : BaseActivity() {
      * Moves the viewer to the given page [index]. It does nothing if the viewer is null or the
      * page is not found.
      */
-    private fun moveToPageIndex(index: Int) {
+    private fun moveToPageIndex(index: Int, forceEnterForward: Boolean = false) {
         val viewer = viewModel.state.value.viewer ?: return
         val currentChapter = viewModel.state.value.currentChapter ?: return
         val page = currentChapter.pages?.getOrNull(index) ?: return
-        viewer.moveToPage(page)
+        viewer.moveToPage(page, forceEnterForward)
     }
 
     /**

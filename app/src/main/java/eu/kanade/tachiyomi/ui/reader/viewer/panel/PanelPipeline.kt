@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.panel
 
+import tachiyomi.core.common.util.system.logcat
 import kotlin.math.max
 import kotlin.math.min
 
@@ -43,7 +44,15 @@ object PanelPipeline {
         val config = PanelPlanner.Config.MANGA
         val isSpread = pageW.toFloat() / pageH.toFloat() >= SPREAD_ASPECT_MIN
         val filled = PanelGapFiller.fill(panels)
+        logcat {
+            "PanelOrderDebug rightToLeft=$rightToLeft isSpread=$isSpread pageW=$pageW pageH=$pageH filled=" +
+                filled.joinToString(prefix = "[", postfix = "]") { "(l=${it.left},t=${it.top},r=${it.right},b=${it.bottom})" }
+        }
         val ordered = PanelOrdering.order(filled, rightToLeft, isSpread)
+        logcat {
+            "PanelOrderDebug ordered=" +
+                ordered.joinToString(prefix = "[", postfix = "]") { "(l=${it.left},t=${it.top},r=${it.right},b=${it.bottom})" }
+        }
         val planned = PanelPlanner.plan(ordered, bubbles, pageW, pageH, rightToLeft, config)
         if (planned.size >= 2) return extendToPageEdges(pad(planned, bubbles))
         // Detection found too little to work with (nothing, or one region covering most of the

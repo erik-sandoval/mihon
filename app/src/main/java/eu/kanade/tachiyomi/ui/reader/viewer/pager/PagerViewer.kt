@@ -193,6 +193,26 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             .firstOrNull { it.item == page }
 
     /**
+     * Whether [page] is the item actually being read, as opposed to one of the offscreen
+     * neighbors [pager] keeps instantiated (`offscreenPageLimit = 1`). Panel-by-panel holders use
+     * this to guard writes to [eu.kanade.tachiyomi.ui.reader.ReaderViewModel]'s single
+     * `savedPanelStop` slot — without it, a prefetched neighbor's own async panel detection
+     * completing (and picking its own entry stop) can clobber the current page's saved position
+     * with the neighbor's, so restoring after a viewer recreation (e.g. rotation) lands on the
+     * wrong panel.
+     */
+    fun isCurrentReaderPage(page: ReaderPage): Boolean = currentPage == page
+
+    /**
+     * Set by [moveToPage] right before an explicit jump (e.g. picking a page from the page grid)
+     * when [forceEnterForward] is requested, and consumed by the very next [onPageChange] this
+     * causes — that jump's own target page should always start on its first panel, regardless of
+     * whether it happens to sit before or after wherever the reader currently is (which is what
+     * the normal position-comparison heuristic below would otherwise read as "entered backward").
+     */
+    private var forceForwardOnNextPageChange = false
+
+    /**
      * Called when a new page (either a [ReaderPage] or [ChapterTransition]) is marked as active
      */
     private fun onPageChange(position: Int) {
@@ -208,6 +228,10 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             // is already the flat, reading-order list of every page/transition across every loaded
             // chapter, so comparing positions in it is direction-safe universally.
             val forward = when {
+                forceForwardOnNextPageChange -> {
+                    forceForwardOnNextPageChange = false
+                    true
+                }
                 // Same page number, different item: a split page with an InsertPage. Position alone
                 // can't disambiguate two logically-adjacent items sharing a number — the InsertPage
                 // is always the second in the reading direction.
@@ -327,14 +351,20 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     /**
      * Tells this viewer to move to the given [page].
      */
-    override fun moveToPage(page: ReaderPage) {
+    override fun moveToPage(page: ReaderPage, forceEnterForward: Boolean) {
         val position = adapter.items.indexOf(page)
         if (position != -1) {
             val currentPosition = pager.currentItem
+            if (forceEnterForward) forceForwardOnNextPageChange = true
             pager.setCurrentItem(position, true)
             // manually call onPageChange since ViewPager listener is not triggered in this case
             if (currentPosition == position) {
                 onPageChange(position)
+                // onPageChange no-ops (and so never consumes the flag) when position is already
+                // currentPage — e.g. re-selecting the page already open from the page grid — so it
+                // has to be cleared here too, or it would wrongly apply to some later, unrelated
+                // page change instead.
+                forceForwardOnNextPageChange = false
             }
         } else {
             logcat { "Page $page not found in adapter" }
