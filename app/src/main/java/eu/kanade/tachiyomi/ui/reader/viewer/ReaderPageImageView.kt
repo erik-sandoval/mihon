@@ -333,9 +333,39 @@ open class ReaderPageImageView @JvmOverloads constructor(
     }
 
     private fun SubsamplingScaleImageView.panelStopTarget(rect: PanelRect): Pair<Float, PointF> {
+        // Uniform scaling can't change a rect's own shape — a fit-both-dimensions scale for a
+        // genuinely tall/narrow panel (real width:height below [TALL_PANEL_ASPECT_THRESHOLD]) still
+        // stretches it to fill the full screen height edge-to-edge, since that's the axis that
+        // binds first. Capping the height budget for that case only shrinks the render (more margin
+        // top/bottom too), without cropping or widening the shown content at all.
+        //
+        // Only applies in portrait (view taller than wide): that's the orientation where the screen
+        // itself is generous with vertical space, so an extreme sliver stretches to fill all of it.
+        // In landscape the view's own height is already scarce, so the uncapped fit-both scale
+        // already shrinks a narrow panel sensibly on its own — piling this cap on top there just
+        // makes it needlessly tiny (confirmed on-device: the same panel that looked "super tall and
+        // skinny" in portrait looked like a small isolated sliver swimming in blank space once
+        // rotated to landscape).
+        val realAspect = (rect.width * sWidth) / (rect.height * sHeight)
+        val isPortrait = height > width
+        val heightBudget = if (isPortrait && realAspect < TALL_PANEL_ASPECT_THRESHOLD) {
+            height * MAX_TALL_PANEL_HEIGHT_FRACTION
+        } else {
+            height.toFloat()
+        }
+        // In landscape, a panel whose own aspect happens to be close to the screen's own wide
+        // aspect fits both dimensions almost exactly, filling the view completely edge-to-edge with
+        // zero breathing room — confirmed on-device to look wrong ("I don't like how it fills the
+        // entire screen"). Only the width side gets a margin (confirmed: top/bottom should stay as
+        // they were) — landscape screens are wide, so left/right is where a panel-by-panel stop
+        // actually has room to spare; capping height too would just shrink it for no reason since
+        // height was never the complaint. Portrait doesn't get this: a panel-by-panel stop there is
+        // rarely wide enough relative to a portrait screen to bind on both axes at once, so it
+        // naturally keeps margin on one side already.
+        val widthBudget = if (isPortrait) width.toFloat() else width * LANDSCAPE_MAX_FILL_FRACTION
         val targetScale = min(
-            width / (rect.width * sWidth),
-            height / (rect.height * sHeight),
+            widthBudget / (rect.width * sWidth),
+            heightBudget / (rect.height * sHeight),
         ).coerceIn(minScale, maxScale)
         val center = PointF(
             (rect.left + rect.width / 2f) * sWidth,
@@ -676,3 +706,12 @@ open class ReaderPageImageView @JvmOverloads constructor(
 private const val MAX_ZOOM_SCALE = 5F
 private const val SPOTLIGHT_FADE_MS = 150L
 private const val FULL_PAGE_DEBUG_THRESHOLD = 0.98f
+
+/** Real-pixel width:height below which a panel-by-panel stop counts as "tall/narrow" for [MAX_TALL_PANEL_HEIGHT_FRACTION]. */
+private const val TALL_PANEL_ASPECT_THRESHOLD = 0.5f
+
+/** Max fraction of the view's height a tall/narrow panel stop is allowed to render at, so it doesn't stretch edge-to-edge. */
+private const val MAX_TALL_PANEL_HEIGHT_FRACTION = 0.6f
+
+/** Max fraction of the view's width a panel-by-panel stop is allowed to fill in landscape, so it always keeps a small left/right margin. */
+private const val LANDSCAPE_MAX_FILL_FRACTION = 0.92f
