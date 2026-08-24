@@ -105,6 +105,6 @@ class PanelDetector(
     companion object {
         private const val DETECTION_BUDGET_MS = 2000L
         private const val MAX_DETECTION_DIMENSION = 900
-        private const val DETECTOR_VERSION = 39
+        private const val DETECTOR_VERSION = 43
     }
 }

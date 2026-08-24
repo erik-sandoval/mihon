@@ -54,7 +54,7 @@ object PanelPipeline {
                 ordered.joinToString(prefix = "[", postfix = "]") { "(l=${it.left},t=${it.top},r=${it.right},b=${it.bottom})" }
         }
         val planned = PanelPlanner.plan(ordered, bubbles, pageW, pageH, rightToLeft, config)
-        if (planned.size >= 2) return extendToPageEdges(pad(planned, bubbles))
+        if (planned.size >= 2) return closeInteriorGaps(extendToPageEdges(pad(planned, bubbles)))
         // Detection found too little to work with (nothing, or one region covering most of the
         // page — a background too noisy/textured for the model to resolve real panel boundaries on
         // is a common cause). There's no real panel geometry here to zoom into, so show the whole
@@ -175,6 +175,41 @@ object PanelPipeline {
         if (bottom < 1f && panels.none { it !== p && horizontalOverlap(it, p) && it.bottom > bottom }) {
             bottom = (bottom + MAX_EDGE_EXTENSION).coerceAtMost(1f)
         }
+        PanelRect(left, top, right, bottom)
+    }
+
+    /**
+     * Even after [pad] and [extendToPageEdges], two adjacent panels can still leave a strip of
+     * real page content between them that neither's own margin reaches — confirmed on a real page
+     * (Official One Piece ch.944 p15): two panels 7% apart in their raw detection each grew inward
+     * by their own BASE_MARGIN-derived amount ([cappedMargin]'s proportional cap, not the full
+     * half-the-gap split its own kdoc describes — that only kicks in once proportional growth
+     * would otherwise exceed it), leaving a ~2.1% strip in the middle that was never shown by
+     * either panel during panel-by-panel navigation. Splits any such leftover interior gap evenly
+     * between the two panels bordering it, so nothing between two real detected panels is ever
+     * permanently unreachable — the same "don't lose real content" principle as
+     * [extendToPageEdges], just for a gap with a panel on both sides instead of the page edge on
+     * one.
+     */
+    private fun closeInteriorGaps(panels: List<PanelRect>): List<PanelRect> = panels.map { p ->
+        var left = p.left
+        var top = p.top
+        var right = p.right
+        var bottom = p.bottom
+
+        panels.filter { it !== p && verticalOverlap(it, p) && it.left >= right }
+            .minByOrNull { it.left - right }
+            ?.let { right += (it.left - right) / 2f }
+        panels.filter { it !== p && verticalOverlap(it, p) && it.right <= left }
+            .minByOrNull { left - it.right }
+            ?.let { left -= (left - it.right) / 2f }
+        panels.filter { it !== p && horizontalOverlap(it, p) && it.top >= bottom }
+            .minByOrNull { it.top - bottom }
+            ?.let { bottom += (it.top - bottom) / 2f }
+        panels.filter { it !== p && horizontalOverlap(it, p) && it.bottom <= top }
+            .minByOrNull { top - it.bottom }
+            ?.let { top -= (top - it.bottom) / 2f }
+
         PanelRect(left, top, right, bottom)
     }
 

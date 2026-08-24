@@ -151,6 +151,25 @@ class PanelPipelineTest {
     }
 
     @Test
+    fun interiorGapBetweenTwoAdjacentPanelsIsClosedNotOrphaned() {
+        // Regression from a real on-device page (Official One Piece ch.944 p15): two panels'
+        // raw detections sit 7% of the page apart. Each one's own margin only grows inward by its
+        // BASE_MARGIN-derived proportional amount (smaller than half the raw gap here, so the
+        // "split the gutter evenly" cap in cappedMargin never actually kicks in), leaving a ~2.1%
+        // strip in the middle that neither panel's padded box reaches — real page content that
+        // was never shown by any panel-by-panel stop at all.
+        val left = PanelRect(0.0f, 0.7642173f, 0.44449624f, 0.9990628f)
+        val right = PanelRect(0.51489437f, 0.76588583f, 0.9351317f, 1.0f)
+        val regions = PanelPipeline.zoomRegions(listOf(left, right), emptyList(), 1000, 1000, rightToLeft = true)
+        val leftRegion = regions.first { it.left < 0.3f }
+        val rightRegion = regions.first { it.left > 0.3f }
+        assertTrue(
+            leftRegion.right >= rightRegion.left - 1e-4f,
+            "no unclaimed strip should remain between the two panels: left=$leftRegion right=$rightRegion",
+        )
+    }
+
+    @Test
     fun pipelineMatchesOrderingThenPlanning() {
         val shuffled = listOf(
             PanelRect(0.55f, 0.5f, 1.0f, 1.0f),
