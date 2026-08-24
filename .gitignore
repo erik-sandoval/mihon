@@ -3,6 +3,9 @@
 .kotlin
 build
 
+# Claude Code local settings
+.claude/settings.local.json
+
 # IDE files
 *.iml
 .idea/*
