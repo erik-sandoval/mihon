@@ -119,16 +119,8 @@ private fun ColumnScope.PanelByPanelViewerSettings(
         onSelectInvertMode = viewModel.preferences.pagerNavInverted::set,
     )
 
-    val imageScaleType by viewModel.preferences.imageScaleType.collectAsState()
-    SettingsChipRow(MR.strings.pref_image_scale_type) {
-        ReaderPreferences.ImageScaleType.mapIndexed { index, it ->
-            FilterChip(
-                selected = imageScaleType == index + 1,
-                onClick = { viewModel.preferences.imageScaleType.set(index + 1) },
-                label = { Text(stringResource(it)) },
-            )
-        }
-    }
+    // No scale-type selector here — Guided view always fits the whole page/panel on screen
+    // (forced in PagerConfig, independent of the pref_image_scale_type_key preference).
 
     val manga by viewModel.mangaFlow.collectAsState()
     val globalRightToLeft by viewModel.preferences.panelByPanelRightToLeft.collectAsState()

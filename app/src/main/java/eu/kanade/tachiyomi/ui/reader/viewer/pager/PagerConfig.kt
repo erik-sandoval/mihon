@@ -1,5 +1,6 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.pager
 
+import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView.SCALE_TYPE_CENTER_INSIDE
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerConfig
@@ -56,8 +57,15 @@ class PagerConfig(
                 { imagePropertyChangedListener?.invoke() },
             )
 
+        // Guided view (panel-by-panel) always fits the whole page/panel on screen — the scale-type
+        // preference is deliberately never applied to it. The real preference is never overwritten
+        // here either, only overridden for this viewer's own exposed value, so switching back to
+        // another reading mode picks up whatever was already stored without any extra save/restore.
         readerPreferences.imageScaleType
-            .register({ imageScaleType = it }, { imagePropertyChangedListener?.invoke() })
+            .register(
+                { imageScaleType = if (viewer is PanelByPanelViewer) SCALE_TYPE_CENTER_INSIDE else it },
+                { imagePropertyChangedListener?.invoke() },
+            )
 
         readerPreferences.zoomStart
             .register({ zoomTypeFromPreference(it) }, { imagePropertyChangedListener?.invoke() })

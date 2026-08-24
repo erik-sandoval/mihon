@@ -3,6 +3,7 @@ package eu.kanade.tachiyomi.ui.reader.viewer.panel
 import android.content.Context
 import android.graphics.BitmapFactory
 import eu.kanade.tachiyomi.data.reader.PanelCacheRepository
+import eu.kanade.tachiyomi.data.reader.PanelFullPageOverrideRepository
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -15,11 +16,21 @@ import kotlin.math.max
 class PanelDetector(
     context: Context,
     private val panelCacheRepository: PanelCacheRepository,
+    private val panelFullPageOverrideRepository: PanelFullPageOverrideRepository,
 ) {
     private val mlDetector by lazy { MlPanelBoundaryDetector.tryCreate(context) }
 
     suspend fun detect(page: ReaderPage, imageBytes: Buffer, direction: PanelDirection): List<Panel> {
         val chapterId = page.chapter.chapter.id ?: return listOf(Panel(PanelRect.FULL_PAGE))
+
+        // User-marked "always show whole page" pages (e.g. title/cast-intro art the detector
+        // can't meaningfully decompose) skip detection entirely — this must win over even a
+        // cached real detection, and isn't invalidated by a DETECTOR_VERSION bump since it's an
+        // annotation, not a detection outcome.
+        if (withContext(Dispatchers.IO) { panelFullPageOverrideRepository.isOverridden(chapterId, page.index) }) {
+            return listOf(Panel(PanelRect.FULL_PAGE))
+        }
+
         val hash = imageBytes.contentHash()
         // Reading direction changes both the reading order AND the merge/divide profile the
         // pipeline applies (see PanelPipeline), so it's part of what the cached result depends

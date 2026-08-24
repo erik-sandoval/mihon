@@ -193,6 +193,16 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             .firstOrNull { it.item == page }
 
     /**
+     * Re-runs panel detection for [page], if its holder is currently alive (on-screen or a
+     * nearby prefetched neighbor) — e.g. after toggling the full-page override from the
+     * page-actions menu. A no-op for any page whose holder isn't currently instantiated.
+     * See [PagerPageHolder.refreshPanels] for [forceFirstStop].
+     */
+    fun refreshPanelDetection(page: ReaderPage, forceFirstStop: Boolean = false) {
+        getPageHolder(page)?.refreshPanels(forceFirstStop)
+    }
+
+    /**
      * Whether [page] is the item actually being read, as opposed to one of the offscreen
      * neighbors [pager] keeps instantiated (`offscreenPageLimit = 1`). Panel-by-panel holders use
      * this to guard writes to [eu.kanade.tachiyomi.ui.reader.ReaderViewModel]'s single

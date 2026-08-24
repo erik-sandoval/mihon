@@ -1,10 +1,15 @@
 package eu.kanade.presentation.reader
 
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Fullscreen
+import androidx.compose.material.icons.outlined.FullscreenExit
+import androidx.compose.material.icons.outlined.GridOff
+import androidx.compose.material.icons.outlined.GridOn
 import androidx.compose.material.icons.outlined.Photo
 import androidx.compose.material.icons.outlined.Save
 import androidx.compose.material.icons.outlined.Share
@@ -31,47 +36,87 @@ fun ReaderPageActionsDialog(
     onSetAsCover: () -> Unit,
     onShare: (Boolean) -> Unit,
     onSave: () -> Unit,
+    isGuidedView: Boolean = false,
+    isFullPageOverridden: Boolean = false,
+    onToggleFullPageOverride: () -> Unit = {},
+    showDebugOrder: Boolean = false,
+    onToggleDebugOrder: () -> Unit = {},
 ) {
     var showSetCoverDialog by remember { mutableStateOf(false) }
 
     AdaptiveSheet(onDismissRequest = onDismissRequest) {
-        Row(
-            modifier = Modifier.padding(vertical = 16.dp),
-            horizontalArrangement = Arrangement.spacedBy(MaterialTheme.padding.small),
-        ) {
-            ActionButton(
-                modifier = Modifier.weight(1f),
-                title = stringResource(MR.strings.set_as_cover),
-                icon = Icons.Outlined.Photo,
-                onClick = { showSetCoverDialog = true },
-            )
-            ActionButton(
-                modifier = Modifier.weight(1f),
-                title = stringResource(MR.strings.action_copy_to_clipboard),
-                icon = Icons.Outlined.ContentCopy,
-                onClick = {
-                    onShare(true)
-                    onDismissRequest()
-                },
-            )
-            ActionButton(
-                modifier = Modifier.weight(1f),
-                title = stringResource(MR.strings.action_share),
-                icon = Icons.Outlined.Share,
-                onClick = {
-                    onShare(false)
-                    onDismissRequest()
-                },
-            )
-            ActionButton(
-                modifier = Modifier.weight(1f),
-                title = stringResource(MR.strings.action_save),
-                icon = Icons.Outlined.Save,
-                onClick = {
-                    onSave()
-                    onDismissRequest()
-                },
-            )
+        Column {
+            Row(
+                modifier = Modifier.padding(vertical = 16.dp),
+                horizontalArrangement = Arrangement.spacedBy(MaterialTheme.padding.small),
+            ) {
+                ActionButton(
+                    modifier = Modifier.weight(1f),
+                    title = stringResource(MR.strings.set_as_cover),
+                    icon = Icons.Outlined.Photo,
+                    onClick = { showSetCoverDialog = true },
+                )
+                ActionButton(
+                    modifier = Modifier.weight(1f),
+                    title = stringResource(MR.strings.action_copy_to_clipboard),
+                    icon = Icons.Outlined.ContentCopy,
+                    onClick = {
+                        onShare(true)
+                        onDismissRequest()
+                    },
+                )
+                ActionButton(
+                    modifier = Modifier.weight(1f),
+                    title = stringResource(MR.strings.action_share),
+                    icon = Icons.Outlined.Share,
+                    onClick = {
+                        onShare(false)
+                        onDismissRequest()
+                    },
+                )
+                ActionButton(
+                    modifier = Modifier.weight(1f),
+                    title = stringResource(MR.strings.action_save),
+                    icon = Icons.Outlined.Save,
+                    onClick = {
+                        onSave()
+                        onDismissRequest()
+                    },
+                )
+            }
+
+            // Guided view only — a global scale-type-style toggle wouldn't make sense for any
+            // other reading mode, since these are both panel-by-panel-specific concerns (skip
+            // detection for this one page; preview the debug order overlay already in settings).
+            if (isGuidedView) {
+                Row(
+                    modifier = Modifier.padding(bottom = 16.dp),
+                    horizontalArrangement = Arrangement.spacedBy(MaterialTheme.padding.small),
+                ) {
+                    ActionButton(
+                        modifier = Modifier.weight(1f),
+                        title = stringResource(
+                            if (isFullPageOverridden) MR.strings.action_show_panels_again else MR.strings.action_show_full_page,
+                        ),
+                        icon = if (isFullPageOverridden) Icons.Outlined.FullscreenExit else Icons.Outlined.Fullscreen,
+                        onClick = {
+                            onToggleFullPageOverride()
+                            onDismissRequest()
+                        },
+                    )
+                    ActionButton(
+                        modifier = Modifier.weight(1f),
+                        title = stringResource(
+                            if (showDebugOrder) MR.strings.action_hide_panel_order else MR.strings.action_show_panel_order,
+                        ),
+                        icon = if (showDebugOrder) Icons.Outlined.GridOff else Icons.Outlined.GridOn,
+                        onClick = {
+                            onToggleDebugOrder()
+                            onDismissRequest()
+                        },
+                    )
+                }
+            }
         }
     }
 

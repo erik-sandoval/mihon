@@ -1,0 +1,23 @@
+CREATE TABLE panel_full_page_override(
+    chapter_id INTEGER NOT NULL,
+    page_index INTEGER NOT NULL,
+    PRIMARY KEY (chapter_id, page_index),
+    FOREIGN KEY(chapter_id) REFERENCES chapters (_id)
+    ON DELETE CASCADE
+);
+
+isOverridden:
+SELECT 1
+FROM panel_full_page_override
+WHERE chapter_id = :chapterId
+AND page_index = :pageIndex
+LIMIT 1;
+
+setOverridden:
+INSERT OR IGNORE INTO panel_full_page_override(chapter_id, page_index)
+VALUES (:chapterId, :pageIndex);
+
+removeOverride:
+DELETE FROM panel_full_page_override
+WHERE chapter_id = :chapterId
+AND page_index = :pageIndex;

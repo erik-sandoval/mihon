@@ -252,6 +252,12 @@ class ReaderActivity : BaseActivity() {
                     is ReaderViewModel.Event.SetCoverResult -> {
                         onSetAsCoverResult(event.result)
                     }
+                    is ReaderViewModel.Event.RefreshPanelDetection -> {
+                        (viewModel.state.value.viewer as? PanelByPanelViewer)?.refreshPanelDetection(
+                            event.page,
+                            forceFirstStop = event.forceFirstStop,
+                        )
+                    }
                 }
             }
             .launchIn(lifecycleScope)
@@ -306,8 +312,10 @@ class ReaderActivity : BaseActivity() {
             val showDebugOrder by readerPreferences.panelByPanelShowDebugOrder.collectAsState()
             // Hidden while the menu is showing — the reader's own bottom icon bar (reading mode /
             // orientation / settings) sits in that same corner, and this would otherwise cover the
-            // settings icon needed to turn the overlay back off.
-            if (showDebugOrder && !state.menuVisible) {
+            // settings icon needed to turn the overlay back off. Also hidden outside Guided view:
+            // the preference is global (not per-manga/per-reading-mode), so without this check it
+            // kept showing on every other reading mode too once turned on once in Guided view.
+            if (showDebugOrder && !state.menuVisible && state.viewer is PanelByPanelViewer) {
                 // Not overlaid on the page itself (would obscure art in a screenshot) — just enough
                 // to identify which series/chapter/page a debug screenshot came from later. Mirrors
                 // ReaderPageIndicator's positioning above: bottom-center with navigationBarsPadding()
@@ -378,11 +386,17 @@ class ReaderActivity : BaseActivity() {
                 )
             }
             is ReaderViewModel.Dialog.PageActions -> {
+                val showDebugOrder by readerPreferences.panelByPanelShowDebugOrder.collectAsState()
                 ReaderPageActionsDialog(
                     onDismissRequest = onDismissRequest,
                     onSetAsCover = viewModel::setAsCover,
                     onShare = viewModel::shareImage,
                     onSave = viewModel::saveImage,
+                    isGuidedView = state.viewer is PanelByPanelViewer,
+                    isFullPageOverridden = state.isPanelFullPageOverridden,
+                    onToggleFullPageOverride = viewModel::toggleFullPageOverride,
+                    showDebugOrder = showDebugOrder,
+                    onToggleDebugOrder = { readerPreferences.panelByPanelShowDebugOrder.set(!showDebugOrder) },
                 )
             }
             is ReaderViewModel.Dialog.PageGrid -> {

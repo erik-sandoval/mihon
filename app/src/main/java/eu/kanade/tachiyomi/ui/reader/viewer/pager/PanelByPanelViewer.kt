@@ -20,6 +20,7 @@ class PanelByPanelViewer(activity: ReaderActivity) : PagerViewer(activity) {
     val panelDetector = PanelDetector(
         context = activity.applicationContext,
         panelCacheRepository = graph.panelCacheRepository,
+        panelFullPageOverrideRepository = graph.panelFullPageOverrideRepository,
     )
 
     // ReadingMode.PANEL_BY_PANEL has no direction of its own (unlike LEFT_TO_RIGHT/RIGHT_TO_LEFT),

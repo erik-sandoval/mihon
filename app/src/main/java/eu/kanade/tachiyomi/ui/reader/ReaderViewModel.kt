@@ -31,6 +31,7 @@ import eu.kanade.tachiyomi.data.cache.CoverCache
 import eu.kanade.tachiyomi.data.database.models.toDomainChapter
 import eu.kanade.tachiyomi.data.download.DownloadCache
 import eu.kanade.tachiyomi.data.download.DownloadManager
+import eu.kanade.tachiyomi.data.reader.PanelFullPageOverrideRepository
 import eu.kanade.tachiyomi.data.download.DownloadProvider
 import eu.kanade.tachiyomi.data.download.model.Download
 import eu.kanade.tachiyomi.data.saver.Image
@@ -124,6 +125,7 @@ class ReaderViewModel(
     private val coverCache: CoverCache,
     private val chapterCache: ChapterCache,
     private val downloadCache: DownloadCache,
+    private val panelFullPageOverrideRepository: PanelFullPageOverrideRepository,
 ) : ViewModel() {
 
     @AssistedFactory
@@ -878,7 +880,30 @@ class ReaderViewModel(
     }
 
     fun openPageDialog(page: ReaderPage) {
-        mutableState.update { it.copy(dialog = Dialog.PageActions(page)) }
+        val chapterId = page.chapter.chapter.id
+        val isOverridden = chapterId != null &&
+            runBlocking(Dispatchers.IO) { panelFullPageOverrideRepository.isOverridden(chapterId, page.index) }
+        mutableState.update { it.copy(dialog = Dialog.PageActions(page), isPanelFullPageOverridden = isOverridden) }
+    }
+
+    /**
+     * Toggles whether [page] always shows whole instead of via panel-by-panel detection — e.g.
+     * for title/cast-intro art the detector can't meaningfully decompose (see CLAUDE.md). Guided
+     * view only; the dialog only exposes this toggle when that's the active viewer.
+     */
+    fun toggleFullPageOverride() {
+        val page = (state.value.dialog as? Dialog.PageActions)?.page ?: return
+        val chapterId = page.chapter.chapter.id ?: return
+        viewModelScope.launchIO {
+            val nowOverridden = !panelFullPageOverrideRepository.isOverridden(chapterId, page.index)
+            if (nowOverridden) {
+                panelFullPageOverrideRepository.setOverridden(chapterId, page.index)
+            } else {
+                panelFullPageOverrideRepository.removeOverride(chapterId, page.index)
+            }
+            mutableState.update { it.copy(isPanelFullPageOverridden = nowOverridden) }
+            eventChannel.send(Event.RefreshPanelDetection(page, forceFirstStop = !nowOverridden))
+        }
     }
 
     fun openSettingsDialog() {
@@ -1082,6 +1107,9 @@ class ReaderViewModel(
          * otherwise hide the value along with everything else in it. Null when not dragging.
          */
         val panelOpacityPreview: Int? = null,
+
+        /** Whether the page currently open in [Dialog.PageActions] is marked to always show whole. */
+        val isPanelFullPageOverridden: Boolean = false,
     ) {
         val currentChapter: ReaderChapter?
             get() = viewerChapters?.currChapter
@@ -1111,5 +1139,13 @@ class ReaderViewModel(
         data class SavedImage(val result: SaveImageResult) : Event
         data class ShareImage(val uri: Uri, val page: ReaderPage) : Event
         data class CopyImage(val uri: Uri) : Event
+
+        /**
+         * Re-run panel detection for [page] — e.g. after [toggleFullPageOverride]. [forceFirstStop]
+         * is true when the override was just removed: a fresh entry into real panels, not a tweak
+         * on an already-open stop list, so the reader should land on stop 0 rather than anchoring
+         * to the old (single, full-page) stop's centre.
+         */
+        data class RefreshPanelDetection(val page: ReaderPage, val forceFirstStop: Boolean) : Event
     }
 }

@@ -318,7 +318,41 @@ class PagerPageHolder(
         val panelSourceBytes: Buffer?,
     )
 
-    private suspend fun loadPanels(viewer: PanelByPanelViewer, imageBytes: Buffer, anchorRect: PanelRect? = null) {
+    /**
+     * Re-runs panel detection for this page on demand — e.g. after the user toggles the
+     * full-page override from the page-actions menu (see [PanelFullPageOverrideRepository]).
+     * A one-shot counterpart to [directionJob]'s reactive re-detect, for a change that's a
+     * direct, immediate user action on this specific page rather than an ambient preference any
+     * open page holder needs to react to.
+     *
+     * [forceFirstStop]: pass true when this re-detection is a fresh entry into real panels
+     * rather than a tweak on an already-open stop list — e.g. the override was just removed —
+     * so the reader lands on stop 0 instead of anchoring to wherever the old (single, full-page)
+     * stop's centre happened to be.
+     */
+    fun refreshPanels(forceFirstStop: Boolean = false) {
+        val panelByPanelViewer = viewer as? PanelByPanelViewer ?: return
+        val imageBytes = panelImageBytes ?: return
+        scope.launch {
+            try {
+                loadPanels(
+                    panelByPanelViewer,
+                    imageBytes,
+                    anchorRect = if (forceFirstStop) null else currentPanelStopRect(),
+                    forceFirstStop = forceFirstStop,
+                )
+            } catch (e: Throwable) {
+                logcat(LogPriority.ERROR, e) { "Panel re-detection failed for page ${page.index}" }
+            }
+        }
+    }
+
+    private suspend fun loadPanels(
+        viewer: PanelByPanelViewer,
+        imageBytes: Buffer,
+        anchorRect: PanelRect? = null,
+        forceFirstStop: Boolean = false,
+    ) {
         val panels = viewer.panelDetector.detect(page, imageBytes, viewer.panelDirection)
         detectedPanels = panels
         val stops = panels.flattenToStops(
@@ -328,7 +362,7 @@ class PagerPageHolder(
             showOutro = viewer.readerPreferences.panelByPanelShowFullPageOutro.get(),
         )
         withUIContext {
-            setPanelStops(stops, anchorRect = anchorRect)
+            setPanelStops(stops, anchorRect = anchorRect, forceFirstStop = forceFirstStop)
         }
     }
 

@@ -212,9 +212,17 @@ open class ReaderPageImageView @JvmOverloads constructor(
      * panel-by-panel guided navigation, and jumps to the first (or last, if this page was
      * entered backward) stop. Pass an empty list to clear (falls back to a single full-page stop).
      */
-    fun setPanelStops(stops: List<PanelRect>, anchorRect: PanelRect? = null) {
+    fun setPanelStops(stops: List<PanelRect>, anchorRect: PanelRect? = null, forceFirstStop: Boolean = false) {
         panelStops = stops.ifEmpty { listOf(PanelRect.FULL_PAGE) }
         panelStopIndex = when {
+            // Removing the full-page override (see PanelFullPageOverrideRepository) is a fresh
+            // entry into real panel detection, not a settings tweak on an already-open stop list —
+            // anchoring to the old full-page rect's centre would land on whichever detected panel
+            // happens to be closest to the page's geometric centre (not necessarily the first, or
+            // even a sensible one), confirmed on-device to misbehave as if the page had already
+            // been fully read. Force stop 0 explicitly instead, same as page-grid selection's
+            // forceEnterForward.
+            forceFirstStop -> 0
             // A settings change (reading direction, intro/outro toggle) re-supplied the stop list
             // for the page currently being read — land on whichever new stop covers roughly the
             // same content the reader was already looking at, instead of jumping to the entry stop.
