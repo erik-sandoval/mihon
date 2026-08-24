@@ -191,24 +191,43 @@ object PanelPipeline {
      * [extendToPageEdges], just for a gap with a panel on both sides instead of the page edge on
      * one.
      */
+    /**
+     * The neighbor to extend toward on each edge is chosen by position relative to [p]'s own
+     * (pre-padding) edge — not by whether it currently sits beyond the already-padded bound.
+     * Filtering by the padded bound (`it.left >= right` etc.) let a genuinely-nearby neighbor that
+     * padding had already pushed past (a common few-percent overlap from normal ML jitter, not a
+     * real gap) get excluded, so the search skipped past it to a much farther panel and extended
+     * this panel's edge all the way there — swallowing the skipped-over panel's entire territory
+     * (confirmed on a real page, Official Vinland Saga ch.1 p68: the top panel's crop grew from a
+     * raw bottom of ~0.355 to a padded 0.527, well past its true immediate neighbor at top~0.31-33,
+     * because that neighbor's top already sat before the padded bottom and got filtered out,
+     * leaving a much farther panel at top~0.69 as the only remaining candidate).
+     *
+     * This is still growth-only, same as before the fix — once the true nearest neighbor is found,
+     * only extend into a genuine remaining positive gap; if the neighbor is already at or before
+     * the current bound, leave the edge untouched rather than shrinking it back. Shrinking would
+     * undo a legitimate prior overlap from [pad]'s own bubble-inclusion growth (two panels that
+     * share a gutter-straddling bubble are meant to overlap so each shows it whole — confirmed
+     * regression against that exact case, Official Bleach ch.17 p16, while first writing this fix).
+     */
     private fun closeInteriorGaps(panels: List<PanelRect>): List<PanelRect> = panels.map { p ->
         var left = p.left
         var top = p.top
         var right = p.right
         var bottom = p.bottom
 
-        panels.filter { it !== p && verticalOverlap(it, p) && it.left >= right }
-            .minByOrNull { it.left - right }
-            ?.let { right += (it.left - right) / 2f }
-        panels.filter { it !== p && verticalOverlap(it, p) && it.right <= left }
-            .minByOrNull { left - it.right }
-            ?.let { left -= (left - it.right) / 2f }
-        panels.filter { it !== p && horizontalOverlap(it, p) && it.top >= bottom }
-            .minByOrNull { it.top - bottom }
-            ?.let { bottom += (it.top - bottom) / 2f }
-        panels.filter { it !== p && horizontalOverlap(it, p) && it.bottom <= top }
-            .minByOrNull { top - it.bottom }
-            ?.let { top -= (top - it.bottom) / 2f }
+        panels.filter { it !== p && verticalOverlap(it, p) && it.left > p.left }
+            .minByOrNull { it.left }
+            ?.let { nearest -> if (nearest.left > right) right += (nearest.left - right) / 2f }
+        panels.filter { it !== p && verticalOverlap(it, p) && it.right < p.right }
+            .maxByOrNull { it.right }
+            ?.let { nearest -> if (nearest.right < left) left -= (left - nearest.right) / 2f }
+        panels.filter { it !== p && horizontalOverlap(it, p) && it.top > p.top }
+            .minByOrNull { it.top }
+            ?.let { nearest -> if (nearest.top > bottom) bottom += (nearest.top - bottom) / 2f }
+        panels.filter { it !== p && horizontalOverlap(it, p) && it.bottom < p.bottom }
+            .maxByOrNull { it.bottom }
+            ?.let { nearest -> if (nearest.bottom < top) top -= (top - nearest.bottom) / 2f }
 
         PanelRect(left, top, right, bottom)
     }

@@ -170,6 +170,44 @@ class PanelPipelineTest {
     }
 
     @Test
+    fun closeInteriorGapsDoesNotReachPastAnAlreadyNearbyNeighborToADistantOne() {
+        // Regression from a real on-device page (Official Vinland Saga ch.1 p68): the top panel's
+        // raw bottom (~0.355) is already just past the top edge of its true immediate neighbors
+        // (~0.31-0.33) — a few percent of overlap from normal ML jitter, not a real gap. The old
+        // closeInteriorGaps only considered neighbors starting at or after the panel's OWN padded
+        // bottom, so both true neighbors got filtered out (their tops were already before that
+        // bottom) and the search fell through to a much farther panel (top ~0.693), extending the
+        // top panel's crop all the way down to ~0.527 — swallowing the entire middle-tier panel's
+        // territory. The fix picks the nearest neighbor by position first, then only extends into a
+        // genuine remaining gap (or clamps to the neighbor if there isn't one).
+        val topPanel = PanelRect(0.0021610695f, 9.467304E-4f, 0.896554f, 0.35508305f)
+        val rightSpear = PanelRect(0.55014193f, 0.31393322f, 0.8924058f, 1.0f)
+        val leftMiddle = PanelRect(0.0f, 0.33309758f, 0.5806764f, 0.6980338f)
+        val bottomLeft = PanelRect(0.108317524f, 0.69298774f, 0.6014403f, 0.93332916f)
+        val bubbles = listOf(
+            PanelRect(0.4264938f, 0.8147194f, 0.59177035f, 0.9448942f),
+            PanelRect(0.093413554f, 0.716229f, 0.19401278f, 0.771475f),
+            PanelRect(0.10597799f, 0.8932628f, 0.19600494f, 0.93414724f),
+            PanelRect(0.69368064f, 0.09151158f, 0.85812813f, 0.16459227f),
+        )
+
+        val regions = PanelPipeline.zoomRegions(
+            listOf(rightSpear, topPanel, leftMiddle, bottomLeft),
+            bubbles,
+            569,
+            800,
+            rightToLeft = true,
+        )
+        val topRegion = regions.first { it.top < 0.1f }
+
+        assertTrue(
+            topRegion.bottom < 0.45f,
+            "top panel's crop should stay near its true immediate neighbors (~0.31-0.33), " +
+                "not reach past them to the distant bottom-left panel (top ~0.693): $topRegion",
+        )
+    }
+
+    @Test
     fun pipelineMatchesOrderingThenPlanning() {
         val shuffled = listOf(
             PanelRect(0.55f, 0.5f, 1.0f, 1.0f),
