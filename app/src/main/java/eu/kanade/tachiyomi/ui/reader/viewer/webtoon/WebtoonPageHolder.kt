@@ -93,6 +93,16 @@ class WebtoonPageHolder(
      */
     fun bind(page: ReaderPage) {
         this.page = page
+        // Identity fields consumed by ReaderPageImageView's enhancement pipeline (Task 12) — must
+        // be set before setImage() below, since without them the enhancement enqueue/cache-check
+        // logic can't resolve a manga/chapter/page identity and silently no-ops. Webtoon's
+        // continuous scroll doesn't use onPageSelected(Boolean)'s reprioritization semantics, so
+        // that part of the base class is left disabled here.
+        frame.pageIndex = page.index
+        frame.mangaId = viewer.activity.viewModel.manga?.id ?: -1L
+        frame.chapterId = page.chapter.chapter.id ?: -1L
+        frame.readerPage = page
+        frame.controlsCurrentPageSelection = false
         loadJob?.cancel()
         loadJob = scope.launch { loadPageAndProcessStatus() }
         refreshLayoutParams()

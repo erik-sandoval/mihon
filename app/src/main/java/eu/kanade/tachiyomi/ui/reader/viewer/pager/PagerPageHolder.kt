@@ -111,6 +111,15 @@ class PagerPageHolder(
     private var panelImageBytes: Buffer? = null
 
     init {
+        // Identity fields consumed by ReaderPageImageView's enhancement pipeline (Task 12) — must
+        // be set before the first onPageSelected()/setImage() call below, since without them the
+        // enhancement enqueue/cache-check logic can't resolve a manga/chapter/page identity and
+        // silently no-ops.
+        pageIndex = page.index
+        mangaId = viewer.activity.viewModel.manga?.id ?: -1L
+        chapterId = page.chapter.chapter.id ?: -1L
+        readerPage = page
+
         if (viewer is PanelByPanelViewer) {
             panelModeActive = true
             // Seed the entry stop from the most recent real navigation direction, since ViewPager

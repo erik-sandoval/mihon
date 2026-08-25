@@ -898,6 +898,13 @@
     <string name="chapter_progress">Page: %1$d</string>
     <string name="no_next_chapter">Next chapter not found</string>
     <string name="decode_image_error">The image couldn\'t be loaded</string>
+    <string name="reader_status_raw">RAW</string>
+    <string name="reader_status_processed">PROCESSED</string>
+    <string name="reader_status_processing">PROCESSING</string>
+    <string name="reader_status_queued">QUEUED</string>
+    <string name="reader_status_finishing">FINISHING...</string>
+    <string name="reader_status_enhancing">ENHANCING</string>
+    <string name="reader_status_enhancing_progress">ENHANCING... %1$d%%</string>
     <string name="confirm_set_image_as_cover">Use this image as cover art?</string>
     <string name="pref_category_for_this_series">For this series</string>
     <string name="viewer">Reading mode</string>
