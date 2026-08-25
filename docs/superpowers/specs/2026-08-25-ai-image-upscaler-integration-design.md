@@ -220,6 +220,28 @@ enhanced, not just on page entry.
    regression-test pattern for interaction bugs in this area, not as
    speculative coverage.
 
+## Additional finding: enhancement cache needs a pipeline-version salt
+
+`ImageEnhancementCache.getConfigHash()` in the source fork hashes every
+user-facing setting (model, noise, scale, tile size, precision, backend,
+max-size limits) plus two narrow hardcoded revision bumps for specific
+NPU/INT8 cases (`PHOTO_NPU_INT8_CACHE_REVISION`,
+`REAL_CUGAN_NPU_INT8_CACHE_REVISION`) — but has no general version salt.
+Internal native tuning that isn't exposed as a user setting (e.g. the
+tile-size/padding/precision fixes documented in the source fork's own
+`IMAGE_ENHANCEMENT_FIXES.md`) is invisible to the hash. A future change to
+those internals would silently keep serving stale cached output with nothing
+to invalidate it — the same class of bug this repo's `DETECTOR_VERSION`
+scheme (`PanelDetector.kt`) exists to prevent for panel detection.
+
+**Action for the port:** add a general `ENHANCEMENT_PIPELINE_VERSION`
+constant into `getConfigHash()`'s output (alongside the existing
+model/setting fields), bumped whenever a native-side change to
+`waifu2x.cpp`/`anime4k.cpp` alters output for already-cached pages — mirroring
+the discipline already established for `DETECTOR_VERSION`. This is a small
+addition on top of the Track A port of `ImageEnhancementCache.kt`, not a
+structural change.
+
 ## Out of scope / not addressed by this design
 
 - Qualcomm NPU/QNN backend (deferred, see Scope).
@@ -227,3 +249,7 @@ enhanced, not just on page entry.
   preference).
 - Any change to panel-detection crop math (not needed — see Interaction
   section above).
+- The manual panel editor (`worktree-manual-panel-editor`, not yet merged to
+  `main`): out of scope since it doesn't exist on `main` today. Worth a quick
+  recheck for interaction with the enhancement pipeline once that branch
+  lands, since it also reads page image data.
