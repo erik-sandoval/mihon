@@ -111,7 +111,7 @@ Add as a new top-level member of the `android {}` block (sibling to `defaultConf
 - [ ] **Step 6: Verify the native build compiles**
 
 Run: `./gradlew :app:externalNativeBuildDebug`
-Expected: `BUILD SUCCESSFUL`, and `app/.cxx/.../arm64-v8a/libwaifu2x-jni.so` exists.
+Expected: `BUILD SUCCESSFUL`. Confirm with: `find app/.cxx -name libwaifu2x-jni.so` — should print at least one path under an `arm64-v8a` directory.
 If it fails with an NCNN `ncnnConfig.cmake` not found error, confirm Step 2 copied the SDK to the exact path `third_party/ncnn-20260113-android-vulkan` (case-sensitive, must match `bundledNcnnSdkDir` in Step 3).
 
 - [ ] **Step 7: Commit**
@@ -146,7 +146,7 @@ Run: `./gradlew :app:assembleDebug`
 Expected: `BUILD SUCCESSFUL`. Then confirm packaging:
 
 ```bash
-unzip -l app/build/outputs/apk/standard/debug/app-standard-universal-debug.apk | grep "realcugan-models/" | head -5
+unzip -l app/build/outputs/apk/debug/app-universal-debug.apk | grep "realcugan-models/" | head -5
 ```
 
 Expected: at least one `.bin`/`.param` file listed (confirms assets weren't excluded by `aaptOptions`/`.gitattributes`).
@@ -214,7 +214,7 @@ class WaifuxBackendResolutionTest {
 
 - [ ] **Step 3: Run the test**
 
-Run: `./gradlew :app:testStandardDebugUnitTest --tests "eu.kanade.tachiyomi.util.waifu2x.WaifuxBackendResolutionTest"`
+Run: `./gradlew :app:testDebugUnitTest --tests "eu.kanade.tachiyomi.util.waifu2x.WaifuxBackendResolutionTest"`
 Expected: PASS (the ported file already implements this fallback correctly — this test documents and locks down that existing behavior, since we're relying on it to make NPU deferral safe).
 If it fails, read `Waifu2x.resolveProcessingBackend`'s actual model-compatibility list and adjust the test's `model` value to one genuinely outside it — don't change the assertion to match unexpected behavior without understanding why first.
 
@@ -286,7 +286,7 @@ Name the reader functions (`isEnhanced()`, `mangaIdOrNull()`, etc.) to match wha
 
 - [ ] **Step 4: Run the test**
 
-Run: `./gradlew :app:testStandardDebugUnitTest --tests "eu.kanade.tachiyomi.data.coil.UtilsEnhancementTagsTest"`
+Run: `./gradlew :app:testDebugUnitTest --tests "eu.kanade.tachiyomi.data.coil.UtilsEnhancementTagsTest"`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -353,7 +353,7 @@ Before writing this test, check whether other tests in `app/src/test/java/eu/kan
 
 - [ ] **Step 4: Run the test**
 
-Run: `./gradlew :app:testStandardDebugUnitTest --tests "eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferencesUpscaleTest"`
+Run: `./gradlew :app:testDebugUnitTest --tests "eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferencesUpscaleTest"`
 Expected: PASS.
 
 - [ ] **Step 5: Commit**
@@ -421,7 +421,7 @@ class ImageEnhancementCacheTest {
 
 - [ ] **Step 4: Run the test**
 
-Run: `./gradlew :app:testStandardDebugUnitTest --tests "eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCacheTest"`
+Run: `./gradlew :app:testDebugUnitTest --tests "eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCacheTest"`
 Expected: PASS.
 
 - [ ] **Step 5: Write a cache-file-lifecycle test using a mocked `Context` over a real temp directory**
@@ -463,7 +463,7 @@ class ImageEnhancementCacheLifecycleTest {
 
 - [ ] **Step 6: Run the test**
 
-Run: `./gradlew :app:testStandardDebugUnitTest --tests "eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCacheLifecycleTest"`
+Run: `./gradlew :app:testDebugUnitTest --tests "eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCacheLifecycleTest"`
 Expected: PASS.
 
 - [ ] **Step 7: Commit**
@@ -544,7 +544,7 @@ Note: `EnhanceRequest` is currently a private nested `data class` inside the `Im
 
 - [ ] **Step 3: Run the test**
 
-Run: `./gradlew :app:testStandardDebugUnitTest --tests "eu.kanade.tachiyomi.util.waifu2x.ImageEnhancerPriorityTest"`
+Run: `./gradlew :app:testDebugUnitTest --tests "eu.kanade.tachiyomi.util.waifu2x.ImageEnhancerPriorityTest"`
 Expected: PASS.
 
 - [ ] **Step 4: Commit**
@@ -584,7 +584,7 @@ Preserve every existing code path (AVIF/JXL/HEIF decode via libvips, the `Decode
 
 - [ ] **Step 4: Verify existing multi-format decode still compiles and the module builds**
 
-Run: `./gradlew :app:compileStandardDebugKotlin`
+Run: `./gradlew :app:compileDebugKotlin`
 Expected: `BUILD SUCCESSFUL`.
 
 - [ ] **Step 5: Manual on-device verification (no existing test coverage for this decoder to extend — matches this repo's convention of manual verification for Android-framework-dependent code)**
@@ -622,7 +622,7 @@ Add the upscaler settings section (toggle, model picker, noise/scale/backend con
 
 - [ ] **Step 3: Verify it compiles**
 
-Run: `./gradlew :app:compileStandardDebugKotlin`
+Run: `./gradlew :app:compileDebugKotlin`
 Expected: `BUILD SUCCESSFUL`.
 
 - [ ] **Step 4: Manual on-device verification**
@@ -662,7 +662,7 @@ This repo's `ReaderActivity.kt` has already-modified touch-handling and settings
 
 - [ ] **Step 3: Verify it compiles**
 
-Run: `./gradlew :app:compileStandardDebugKotlin`
+Run: `./gradlew :app:compileDebugKotlin`
 Expected: `BUILD SUCCESSFUL`.
 
 - [ ] **Step 4: Manual on-device verification**
@@ -705,7 +705,7 @@ Add the fork's enqueue/cancel/reprioritize calls (`ImageEnhancer.enhance(...)`, 
 
 - [ ] **Step 3: Verify it compiles**
 
-Run: `./gradlew :app:compileStandardDebugKotlin`
+Run: `./gradlew :app:compileDebugKotlin`
 Expected: `BUILD SUCCESSFUL`.
 
 - [ ] **Step 4: Manual on-device verification — confirm panel detection is unaffected**
@@ -756,7 +756,7 @@ so that when the pre-swap view was showing the panel-by-panel full-page/first st
 
 - [ ] **Step 4: Verify it compiles**
 
-Run: `./gradlew :app:compileStandardDebugKotlin`
+Run: `./gradlew :app:compileDebugKotlin`
 Expected: `BUILD SUCCESSFUL`.
 
 - [ ] **Step 5: Manual on-device verification — the actual regression scenario from the spec**
@@ -781,13 +781,13 @@ git commit -m "feat(upscale): wire enhanced-bitmap display into ReaderPageImageV
 
 - [ ] **Step 1: Run the full unit test suite**
 
-Run: `./gradlew :app:testStandardDebugUnitTest`
+Run: `./gradlew :app:testDebugUnitTest`
 Expected: all tests pass, including every test added in Tasks 3-7 plus this repo's pre-existing `PanelOrderingTest`/`PanelPipelineTest` (confirming Track B didn't regress panel detection's own test coverage).
 
 - [ ] **Step 2: Full release-profile build sanity check**
 
 Run: `./gradlew :app:assembleDebug`
-Expected: `BUILD SUCCESSFUL`. Confirm APK size grew by roughly the expected ~190MB (native SDK + assets) via `ls -lh app/build/outputs/apk/standard/debug/`.
+Expected: `BUILD SUCCESSFUL`. Confirm APK size grew by roughly the expected ~190MB (native SDK + assets) via `ls -lh app/build/outputs/apk/debug/`.
 
 - [ ] **Step 3: Install and smoke-test on the S24 Ultra via wireless adb**
 
