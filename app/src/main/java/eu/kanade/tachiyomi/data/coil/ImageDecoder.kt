@@ -1,5 +1,8 @@
 package eu.kanade.tachiyomi.data.coil
 
+import android.content.Context
+import android.graphics.Bitmap
+import android.graphics.BitmapFactory
 import androidx.core.graphics.createBitmap
 import androidx.core.graphics.scale
 import ca.mpreg.imagedecoder.ImageDecoder
@@ -13,21 +16,34 @@ import coil3.decode.Decoder
 import coil3.decode.ImageSource
 import coil3.fetch.SourceFetchResult
 import coil3.request.Options
+import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
+import eu.kanade.tachiyomi.util.system.GLUtil
+import eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache
+import eu.kanade.tachiyomi.util.waifu2x.Waifu2x
+import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.currentCoroutineContext
+import kotlinx.coroutines.ensureActive
 import logcat.LogPriority
+import mihon.app.di.appGraph
 import okio.BufferedSource
 import tachiyomi.core.common.util.system.ImageUtil
 import tachiyomi.core.common.util.system.logcat
+import uy.kohesive.injekt.Injekt
+import uy.kohesive.injekt.api.get
+import kotlin.math.max
+import kotlin.math.min
+import kotlin.math.roundToInt
 
 /**
  * A [Decoder] that uses [ImageDecoder] (libvips-based) to decode image formats not supported
  * by the Android system decoder (AVIF, JXL, HEIF, etc.).
+ *
+ * It also applies on-the-fly Waifu2x-family image enhancement (Real-CUGAN/Real-ESRGAN/etc.)
+ * when the request is tagged as [Options.isEnhanced], serving an already-enhanced disk-cache
+ * hit directly when available and otherwise upscaling the freshly decoded bitmap.
  */
 class ImageDecoder(private val resources: ImageSource, private val options: Options) : Decoder {
 
-    /**
-     * Wraps a raw [ImageDecoder.DecodeResult] as a Coil [Image] for callers that want
-     * direct access to the RGBA [java.nio.ByteBuffer] (e.g. the new-decoder path).
-     */
     class DecodeResultImage(val res: ImageDecoder.DecodeResult) : Image {
         override val size: Long get() = res.image.capacity().toLong()
         override val width: Int get() = res.width
@@ -37,6 +53,14 @@ class ImageDecoder(private val resources: ImageSource, private val options: Opti
     }
 
     override suspend fun decode(): DecodeResult {
+        // Serve an already-enhanced cache hit without decoding the original source at all.
+        decodeCachedEnhancedImage()?.let { cachedBitmap ->
+            return DecodeResult(
+                image = cachedBitmap.asImage(),
+                isSampled = false,
+            )
+        }
+
         val decoder = resources.source().use {
             try {
                 ImageDecoder.new(it.inputStream())
@@ -53,8 +77,6 @@ class ImageDecoder(private val resources: ImageSource, private val options: Opti
         val srcWidth = res.width
         val srcHeight = res.height
 
-        // newDecoder path: caller wants the raw DecodeResult (e.g. for custom rendering).
-        // Hand it back as-is; sampling is the caller's responsibility.
         if (options.newDecoder) {
             return DecodeResult(
                 image = DecodeResultImage(res),
@@ -62,7 +84,6 @@ class ImageDecoder(private val resources: ImageSource, private val options: Opti
             )
         }
 
-        // Normal path: produce a Bitmap scaled to the requested output size.
         val dstWidth = options.size.widthPx(options.scale) { srcWidth }
         val dstHeight = options.size.heightPx(options.scale) { srcHeight }
         val sampleSize = DecodeUtils.calculateInSampleSize(
@@ -73,14 +94,10 @@ class ImageDecoder(private val resources: ImageSource, private val options: Opti
             scale = options.scale,
         )
 
-        // Copy RGBA pixels from the native buffer into a full-resolution bitmap.
-        // We must do this while `res` (and its native memory) is still alive.
         val fullBitmap = createBitmap(srcWidth, srcHeight)
         res.image.rewind()
         fullBitmap.copyPixelsFromBuffer(res.image)
 
-        // Downsample if needed. sampleSize is a power-of-two factor; the target
-        // dimensions are src / sampleSize, matching BitmapFactory inSampleSize behaviour.
         val bitmap = if (sampleSize > 1) {
             val scaledWidth = (srcWidth / sampleSize).coerceAtLeast(1)
             val scaledHeight = (srcHeight / sampleSize).coerceAtLeast(1)
@@ -91,10 +108,298 @@ class ImageDecoder(private val resources: ImageSource, private val options: Opti
             fullBitmap
         }
 
+        val finalBitmap = applyEnhancementIfNeeded(bitmap)
+
         return DecodeResult(
-            image = bitmap.asImage(),
+            image = finalBitmap.asImage(),
             isSampled = sampleSize > 1,
         )
+    }
+
+    /**
+     * Serves an already-enhanced bitmap straight from disk cache, skipping the source decode
+     * entirely. Returns null when enhancement isn't applicable/enabled, the request is missing
+     * its manga/chapter/page tags, or nothing is cached yet for the current config (including
+     * when a cached file exists but fails to decode/display, in which case it's removed).
+     */
+    private fun decodeCachedEnhancedImage(): Bitmap? {
+        if (!options.isEnhanced()) return null
+
+        val preferences = readerPreferences()
+        if (!preferences.realCuganEnabled().get()) return null
+
+        val mangaId = options.mangaIdOrNull() ?: return null
+        val chapterId = options.chapterIdOrNull() ?: return null
+        val pageIndex = options.pageIndexOrNull() ?: return null
+        val pageVariant = options.pageVariantOrNull() ?: ""
+
+        val context = Injekt.get<Context>()
+        ImageEnhancementCache.init(context)
+
+        val configHash = buildConfigHash(preferences)
+        val cachedFile = ImageEnhancementCache.getCachedImage(mangaId, chapterId, pageIndex, configHash, pageVariant)
+            ?: return null
+
+        val cachedBitmap = BitmapFactory.decodeFile(cachedFile.absolutePath)
+        if (cachedBitmap != null && ImageEnhancementCache.isDisplayable(cachedBitmap)) {
+            logcat(LogPriority.DEBUG) {
+                "ImageDecoder: Page $pageIndex/$pageVariant served from enhanced cache before source decode"
+            }
+            return cachedBitmap
+        }
+
+        cachedBitmap?.recycle()
+        ImageEnhancementCache.removeCachedImage(mangaId, chapterId, pageIndex, configHash, pageVariant)
+        return null
+    }
+
+    /**
+     * Runs the configured Waifu2x-family model over [bitmap] when the request is tagged for
+     * enhancement and the feature is enabled. Falls back to returning [bitmap] unchanged when
+     * enhancement isn't applicable, or on any failure during processing — enhancement failure
+     * must never break the whole decode.
+     */
+    private suspend fun applyEnhancementIfNeeded(bitmap: Bitmap): Bitmap {
+        if (!options.isEnhanced()) return bitmap
+
+        val preferences = readerPreferences()
+        if (!preferences.realCuganEnabled().get()) return bitmap
+
+        val mangaId = options.mangaIdOrNull() ?: return bitmap
+        val chapterId = options.chapterIdOrNull() ?: return bitmap
+        val pageIndex = options.pageIndexOrNull() ?: return bitmap
+        val pageVariant = options.pageVariantOrNull() ?: ""
+
+        return enhance(bitmap, mangaId, chapterId, pageIndex, pageVariant, preferences)
+    }
+
+    private suspend fun enhance(
+        source: Bitmap,
+        mangaId: Long,
+        chapterId: Long,
+        pageIndex: Int,
+        pageVariant: String,
+        preferences: ReaderPreferences,
+    ): Bitmap {
+        // A single mutable reference is used throughout so that, whatever happens (including an
+        // exception caught below), it always points to a valid, non-recycled bitmap to return.
+        var bitmap = source
+        val context = Injekt.get<Context>()
+        ImageEnhancementCache.init(context)
+        val configHash = buildConfigHash(preferences)
+
+        try {
+            val model = preferences.realCuganModel().get()
+            val realEsrganStyle = preferences.realEsrganStyle().get()
+            val noise = preferences.realCuganNoiseLevel().get()
+            val scale = preferences.realCuganScale().get()
+
+            // --- Resolution limit gate: skip enhancement entirely for oversized sources ---
+            val skipMaxWidth = preferences.realCuganSkipMaxSizeWidth().get()
+            val skipMaxHeight = preferences.realCuganSkipMaxSizeHeight().get()
+            val exceedsSkipLimit = (skipMaxWidth > 0 && bitmap.width > skipMaxWidth) ||
+                (skipMaxHeight > 0 && bitmap.height > skipMaxHeight)
+
+            if (exceedsSkipLimit) {
+                logcat(LogPriority.DEBUG) {
+                    "ImageDecoder: Skipping enhancement for page $pageIndex - source " +
+                        "${bitmap.width}x${bitmap.height} exceeds max resolution ${skipMaxWidth}x$skipMaxHeight"
+                }
+                ImageEnhancementCache.saveSkippedToCache(mangaId, chapterId, pageIndex, configHash, pageVariant)
+                return bitmap
+            }
+
+            // --- Prescale down to the configured processing max size, if any ---
+            val processMaxWidth = preferences.realCuganMaxSizeWidth().get()
+            val processMaxHeight = preferences.realCuganMaxSizeHeight().get()
+            val hasProcessMaxResolution = processMaxWidth > 0 || processMaxHeight > 0
+            if (hasProcessMaxResolution) {
+                val widthRatio = if (processMaxWidth > 0) {
+                    processMaxWidth / bitmap.width.toFloat()
+                } else {
+                    Float.POSITIVE_INFINITY
+                }
+                val heightRatio = if (processMaxHeight > 0) {
+                    processMaxHeight / bitmap.height.toFloat()
+                } else {
+                    Float.POSITIVE_INFINITY
+                }
+                val ratio = min(widthRatio, heightRatio)
+                if (ratio in 0f..<1f) {
+                    val newWidth = max(1, (bitmap.width * ratio).roundToInt())
+                    val newHeight = max(1, (bitmap.height * ratio).roundToInt())
+                    logcat(LogPriority.DEBUG) {
+                        "ImageDecoder: Prescaling page $pageIndex input ${bitmap.width}x${bitmap.height} -> " +
+                            "${newWidth}x$newHeight"
+                    }
+                    val scaledBitmap = scaleBitmap(bitmap, newWidth, newHeight)
+                    if (scaledBitmap !== bitmap) {
+                        bitmap.recycle()
+                        bitmap = scaledBitmap
+                    }
+                }
+            }
+
+            currentCoroutineContext().ensureActive()
+
+            // --- Performance mode ---
+            val perfMode = preferences.realCuganPerformanceMode().get()
+            val tileSleepMs = when (perfMode) {
+                1 -> 5
+                2 -> 15
+                else -> 0
+            }
+            val tileSize = preferences.realCuganTileSize().get().coerceAtLeast(32)
+            val precision = preferences.realCuganPrecision().get().coerceIn(0, 3)
+            val fp16Arithmetic = preferences.realCuganFp16Arithmetic().get()
+
+            val effectiveScale = ImageEnhancementCache.getEffectiveScale(model, scale, realEsrganStyle)
+            val processingBackend = Waifu2x.resolveProcessingBackend(
+                preferences.realCuganProcessingBackend().get(),
+                model,
+                effectiveScale,
+            )
+
+            val initialized = when (model) {
+                0 -> Waifu2x.initRealCugan(
+                    context, noise, effectiveScale, isPro = false, tileSleepMs = tileSleepMs,
+                    tileSize = tileSize, precision = precision, fp16Arithmetic = fp16Arithmetic,
+                    processingBackend = processingBackend,
+                )
+                1 -> Waifu2x.initRealCugan(
+                    context, noise, effectiveScale, isPro = true, tileSleepMs = tileSleepMs,
+                    tileSize = tileSize, precision = precision, fp16Arithmetic = fp16Arithmetic,
+                    processingBackend = processingBackend,
+                )
+                Waifu2x.MODEL_REAL_ESRGAN_ANIME -> Waifu2x.initRealESRGAN(
+                    context, effectiveScale, style = realEsrganStyle, tileSleepMs = tileSleepMs,
+                    tileSize = tileSize, precision = precision, fp16Arithmetic = fp16Arithmetic,
+                    processingBackend = processingBackend,
+                )
+                3 -> Waifu2x.initNose(
+                    context, tileSleepMs = tileSleepMs, tileSize = tileSize,
+                    precision = precision, fp16Arithmetic = fp16Arithmetic,
+                )
+                4 -> Waifu2x.initWaifu2x(
+                    context, noise, effectiveScale, tileSleepMs = tileSleepMs, tileSize = tileSize,
+                    precision = precision, fp16Arithmetic = fp16Arithmetic,
+                )
+                5 -> Waifu2x.initWaifu2xUpconv7(
+                    context, noise, effectiveScale, tileSleepMs = tileSleepMs, tileSize = tileSize,
+                    precision = precision, fp16Arithmetic = fp16Arithmetic,
+                )
+                else -> if (Waifu2x.isW2xExModel(model)) {
+                    Waifu2x.initW2xEx(
+                        context, model, scale = effectiveScale, tileSleepMs = tileSleepMs,
+                        tileSize = tileSize, precision = precision, fp16Arithmetic = fp16Arithmetic,
+                        processingBackend = processingBackend,
+                    )
+                } else {
+                    Waifu2x.initRealCugan(
+                        context, noise, effectiveScale, tileSleepMs = tileSleepMs, tileSize = tileSize,
+                        precision = precision, fp16Arithmetic = fp16Arithmetic,
+                        processingBackend = processingBackend,
+                    )
+                }
+            }
+
+            val processed = if (initialized) {
+                when (model) {
+                    0, 1 -> Waifu2x.processRealCugan(bitmap, pageIndex)
+                    Waifu2x.MODEL_REAL_ESRGAN_ANIME -> Waifu2x.processRealESRGAN(bitmap, pageIndex)
+                    3 -> Waifu2x.processNose(bitmap, pageIndex)
+                    4, 5 -> Waifu2x.processWaifu2x(bitmap, pageIndex)
+                    else -> if (Waifu2x.isW2xExModel(model)) {
+                        Waifu2x.processW2xEx(bitmap, pageIndex)
+                    } else {
+                        Waifu2x.processRealCugan(bitmap, pageIndex)
+                    }
+                }
+            } else {
+                null
+            }
+
+            if (processed == null) return bitmap
+
+            var result: Bitmap = processed
+            var ownsResult = true
+            try {
+                currentCoroutineContext().ensureActive()
+
+                // --- Output resolution limit (avoid exceeding the device's max GL texture size) ---
+                val textureLimit = GLUtil.DEVICE_TEXTURE_LIMIT
+                if (result.width > textureLimit || result.height > textureLimit) {
+                    val widthRatio = textureLimit.toFloat() / result.width
+                    val heightRatio = textureLimit.toFloat() / result.height
+                    val ratio = min(widthRatio, heightRatio)
+                    val newWidth = (result.width * ratio).toInt().coerceAtLeast(1)
+                    val newHeight = (result.height * ratio).toInt().coerceAtLeast(1)
+                    logcat(LogPriority.DEBUG) {
+                        "ImageDecoder: Output downscale page $pageIndex: ${result.width}x${result.height} -> " +
+                            "${newWidth}x$newHeight (texture limit $textureLimit)"
+                    }
+                    val downscaled = scaleBitmap(result, newWidth, newHeight)
+                    if (downscaled !== result) {
+                        result.recycle()
+                        result = downscaled
+                    }
+                }
+
+                return if (ImageEnhancementCache.isDisplayable(result)) {
+                    // enqueueSaveToCache takes ownership of the bitmap once invoked.
+                    ownsResult = false
+                    ImageEnhancementCache.enqueueSaveToCache(
+                        mangaId,
+                        chapterId,
+                        pageIndex,
+                        configHash,
+                        result,
+                        pageVariant,
+                    )
+                    result
+                } else {
+                    logcat(LogPriority.ERROR) {
+                        "ImageDecoder: Page $pageIndex/$pageVariant produced a nearly transparent result, " +
+                            "keeping original image"
+                    }
+                    bitmap
+                }
+            } finally {
+                if (ownsResult && result !== bitmap && !result.isRecycled) {
+                    result.recycle()
+                }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            logcat(LogPriority.ERROR, e) { "ImageDecoder: Failed to enhance image on-the-fly for page $pageIndex/$pageVariant" }
+            return bitmap
+        }
+    }
+
+    private fun readerPreferences(): ReaderPreferences = Injekt.get<Context>().appGraph.readerPreferences
+
+    private fun buildConfigHash(preferences: ReaderPreferences): String {
+        return ImageEnhancementCache.getConfigHash(
+            noise = preferences.realCuganNoiseLevel().get(),
+            scale = preferences.realCuganScale().get(),
+            model = preferences.realCuganModel().get(),
+            realEsrganStyle = preferences.realEsrganStyle().get(),
+            maxWidth = preferences.realCuganMaxSizeWidth().get(),
+            maxHeight = preferences.realCuganMaxSizeHeight().get(),
+            skipMaxWidth = preferences.realCuganSkipMaxSizeWidth().get(),
+            skipMaxHeight = preferences.realCuganSkipMaxSizeHeight().get(),
+            tileSize = preferences.realCuganTileSize().get(),
+            precision = preferences.realCuganPrecision().get(),
+            fp16Arithmetic = preferences.realCuganFp16Arithmetic().get(),
+            processingBackend = preferences.realCuganProcessingBackend().get(),
+        )
+    }
+
+    private fun scaleBitmap(source: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap {
+        if (source.width == targetWidth && source.height == targetHeight) return source
+        return Waifu2x.scaleBitmapNative(source, max(1, targetWidth), max(1, targetHeight))
+            ?: Bitmap.createScaledBitmap(source, max(1, targetWidth), max(1, targetHeight), true)
     }
 
     class Factory : Decoder.Factory {
