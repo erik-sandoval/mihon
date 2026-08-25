@@ -346,16 +346,35 @@ class ImageDecoder(private val resources: ImageSource, private val options: Opti
                 }
 
                 return if (ImageEnhancementCache.isDisplayable(result)) {
-                    // enqueueSaveToCache takes ownership of the bitmap once invoked.
+                    // enqueueSaveToCache takes ownership of whatever bitmap it's given and
+                    // recycles it (synchronously on a cold cache dir/pending-save collision,
+                    // or asynchronously once the background save completes — either way,
+                    // unconditionally, success or reject; see its doc comment). `result` is
+                    // also what we're about to return for display, so it must never be the
+                    // same object handed to the cache — otherwise the cache pipeline can
+                    // recycle the page's own display bitmap out from under Coil/the pager
+                    // mid-draw. Hand the cache a private copy instead.
+                    val cacheBitmap = result.copy(result.config ?: Bitmap.Config.ARGB_8888, false)
+                    if (cacheBitmap != null) {
+                        ImageEnhancementCache.enqueueSaveToCache(
+                            mangaId,
+                            chapterId,
+                            pageIndex,
+                            configHash,
+                            cacheBitmap,
+                            pageVariant,
+                        )
+                    } else {
+                        logcat(LogPriority.WARN) {
+                            "ImageDecoder: Failed to copy enhanced result for cache write-back, page $pageIndex/$pageVariant"
+                        }
+                    }
                     ownsResult = false
-                    ImageEnhancementCache.enqueueSaveToCache(
-                        mangaId,
-                        chapterId,
-                        pageIndex,
-                        configHash,
-                        result,
-                        pageVariant,
-                    )
+                    // The pre-enhancement source was consumed to produce `result` and is no
+                    // longer needed now that we're committed to returning `result` for display.
+                    if (bitmap !== result && !bitmap.isRecycled) {
+                        bitmap.recycle()
+                    }
                     result
                 } else {
                     logcat(LogPriority.ERROR) {
