@@ -175,15 +175,32 @@ lost" bug class already documented three times in CLAUDE.md
 (`state.manga` teardown, rotation restore, page-grid selection) — a fourth
 trigger for it, not one the source fork's code ever had to solve.
 
-**Required fix, part of Track B item 1:** before the enhanced-bitmap swap
-calls `setImage()`, capture the currently-active panel stop (if any); after
-`setImage()` completes, explicitly re-apply that stop via the existing
-`panelStopTarget`/`moveToPage` restore path, rather than accepting whatever
-`setImage()` defaults to. Same capture-before/restore-after pattern already
-established for `setPanEnabled(false)`'s recenter side effect. This needs a
-regression check during on-device validation (Rollout step 3): trigger a
-background upscale completion *while already mid-panel* on the page being
-enhanced, not just on page entry.
+**Correction after closer reading of the actual swap code (`animateProcessedSwap`):**
+the source fork's swap is not a bare `setImage()` call — it's a dual-view
+crossfade (`createSubsamplingPageView()` loads the new bitmap into a second,
+overlaid `SubsamplingScaleImageView`; once *that* view reports `onReady`, it
+crossfades in and replaces `pageView`). Its `onReady` handler, when the
+pre-swap view was zoomed in past `minScale`, already remaps center and scale
+as **fractions** of the old view's `sWidth`/`sHeight` onto the new view's
+`sWidth`/`sHeight` — not as raw pixel values. That's the same
+resolution-independent reasoning this repo's panel rects already use, so it
+turns out to reproduce the correct panel-relative position across a
+resolution change *for free*, without needing a bespoke capture/restore pass.
+
+The one piece that **is** a real gap: when the pre-swap view was **not**
+zoomed in (sitting at `minScale` — which includes panel-by-panel's full-page
+stop), the fork's `onReady` handler falls through to an unconditional
+`landscapeZoom(true)` call, with no `panelModeActive` check. This repo's own
+existing `landscapeZoom` call sites are already gated on `panelModeActive`
+for exactly this reason (see CLAUDE.md's per-page-setup-call guidance) — the
+ported swap code needs the same gate, substituting a `jumpToPanelStop(panelStopIndex)`
+call when panel mode is active instead of falling through to page-relative
+`landscapeZoom`. This is a small, targeted fix (one branch), not a new
+capture/restore mechanism. Validation (Rollout step 3) should cover both the
+already-zoomed case (a non-first panel stop, confirming the free remap works)
+and the not-zoomed case (the first/full-page stop, confirming the
+`landscapeZoom` gate fix works) for a swap completing while the page is still
+on screen.
 
 ## Rollout / validation plan
 
