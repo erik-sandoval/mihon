@@ -91,6 +91,9 @@ import eu.kanade.tachiyomi.util.system.readerBackgroundColor
 import eu.kanade.tachiyomi.util.system.toShareIntent
 import eu.kanade.tachiyomi.util.system.toast
 import eu.kanade.tachiyomi.util.view.setComposeContent
+import eu.kanade.tachiyomi.util.waifu2x.Waifu2x
+import kotlinx.coroutines.Job
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.combine
 import kotlinx.coroutines.flow.distinctUntilChanged
 import kotlinx.coroutines.flow.drop
@@ -118,6 +121,10 @@ class ReaderActivity : BaseActivity() {
     private val graph: AppGraph by lazy { metroGraph() }
 
     companion object {
+        // How long to keep Waifu2x marked "UI busy" (deprioritizing upscale work) after the last
+        // observed touch/menu-visibility change, before letting it resume at full priority.
+        private const val UI_BUSY_COOLDOWN_MS = 1_000L
+
         fun newIntent(context: Context, mangaId: Long?, chapterId: Long?): Intent {
             return Intent(context, ReaderActivity::class.java).apply {
                 putExtra("manga", mangaId)
@@ -144,6 +151,9 @@ class ReaderActivity : BaseActivity() {
     private var menuToggleToast: Toast? = null
     private var readingModeToast: Toast? = null
     private val displayRefreshHost = DisplayRefreshHost()
+
+    /** Pending "clear UI-busy" job scheduled by [onUiInteracted]; re-armed on every new interaction. */
+    private var uiBusyJob: Job? = null
 
     private val windowInsetsController by lazy { WindowInsetsControllerCompat(window, window.decorView) }
 
@@ -228,6 +238,22 @@ class ReaderActivity : BaseActivity() {
             .onEach(::setChapters)
             .launchIn(lifecycleScope)
 
+        // Deprioritize Waifu2x upscale work while the reader's menu/UI chrome is up, and rely on
+        // onUiInteracted()'s own cooldown (via dispatchTouchEvent) to resume it once the menu is
+        // dismissed and interaction has settled.
+        viewModel.state
+            .map { it.menuVisible }
+            .distinctUntilChanged()
+            .onEach { menuVisible ->
+                if (menuVisible) {
+                    uiBusyJob?.cancel()
+                    Waifu2x.setUiBusy(true)
+                } else {
+                    onUiInteracted()
+                }
+            }
+            .launchIn(lifecycleScope)
+
         viewModel.eventFlow
             .onEach { event ->
                 when (event) {
@@ -261,6 +287,10 @@ class ReaderActivity : BaseActivity() {
                 }
             }
             .launchIn(lifecycleScope)
+
+        if (readerPreferences.waifu2xEnabled().get()) {
+            Waifu2x.init(this, readerPreferences.waifu2xNoiseLevel().get())
+        }
     }
 
     private fun ReaderActivityBinding.setComposeOverlay(): Unit = composeOverlay.setComposeContent {
@@ -427,6 +457,8 @@ class ReaderActivity : BaseActivity() {
      */
     override fun onDestroy() {
         super.onDestroy()
+        uiBusyJob?.cancel()
+        Waifu2x.setUiBusy(false)
         viewModel.state.value.viewer?.destroy()
         config = null
         menuToggleToast?.cancel()
@@ -511,6 +543,31 @@ class ReaderActivity : BaseActivity() {
     override fun dispatchGenericMotionEvent(event: MotionEvent): Boolean {
         val handled = viewModel.state.value.viewer?.handleGenericMotionEvent(event) ?: false
         return handled || super.dispatchGenericMotionEvent(event)
+    }
+
+    /**
+     * Pure observation tap for Waifu2x's UI-busy signal: every raw touch event marks the upscaler
+     * busy (deprioritizing its work) and (re)arms a cooldown to clear that flag. This does not
+     * consume or alter the event in any way — seeing `ev` here is not consent to intercept it. Per
+     * this file's touch-handling history, several independent components already watch this same
+     * touch stream (the viewer's own gesture handling, [dispatchGenericMotionEvent], etc.) and have
+     * historically broken when a new observer started consuming or short-circuiting events. This
+     * override must always end with an unmodified `super.dispatchTouchEvent(ev)` call.
+     */
+    override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        onUiInteracted()
+        return super.dispatchTouchEvent(ev)
+    }
+
+    private fun onUiInteracted() {
+        Waifu2x.setUiBusy(true)
+        uiBusyJob?.cancel()
+        uiBusyJob = lifecycleScope.launch {
+            delay(UI_BUSY_COOLDOWN_MS)
+            if (!viewModel.state.value.menuVisible) {
+                Waifu2x.setUiBusy(false)
+            }
+        }
     }
 
     @Composable
