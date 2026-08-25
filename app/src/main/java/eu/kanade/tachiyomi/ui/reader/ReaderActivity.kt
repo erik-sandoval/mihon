@@ -110,6 +110,7 @@ import tachiyomi.core.common.Constants
 import tachiyomi.core.common.i18n.stringResource
 import tachiyomi.core.common.util.lang.launchIO
 import tachiyomi.core.common.util.lang.launchNonCancellable
+import tachiyomi.core.common.util.lang.withIOContext
 import tachiyomi.core.common.util.system.logcat
 import tachiyomi.i18n.MR
 import tachiyomi.presentation.core.util.collectAsState
@@ -296,27 +297,40 @@ class ReaderActivity : BaseActivity() {
         // Waifu2x.updatePerformance(...) native call — a single activity-scoped collector here,
         // rather than one duplicated per ReaderPageImageView instance (each page view would
         // otherwise race an identical collector to set the same global state).
+        //
+        // Waifu2x.updatePerformance() calls into native code (nativeUpdatePerformanceConfig)
+        // that takes the same mutex the inference path holds for the entire duration of a
+        // page's upscale — so this must run off the main thread. lifecycleScope's default
+        // dispatcher is Dispatchers.Main.immediate, and Preference.changes() replays its current
+        // value immediately on subscribe, so without withIOContext here this would block the UI
+        // thread for as long as any in-flight upscale takes, both at onCreate (subscribe-time
+        // replay racing an already-running enhancement) and every time either preference is
+        // actually changed while reading.
         readerPreferences.realCuganPerformanceMode().changes()
             .onEach { mode ->
-                val sleepMs = when (mode) {
-                    0 -> 0
-                    1 -> 5
-                    2 -> 15
-                    else -> 0
+                withIOContext {
+                    val sleepMs = when (mode) {
+                        0 -> 0
+                        1 -> 5
+                        2 -> 15
+                        else -> 0
+                    }
+                    Waifu2x.updatePerformance(sleepMs, readerPreferences.realCuganTileSize().get().coerceAtLeast(32))
                 }
-                Waifu2x.updatePerformance(sleepMs, readerPreferences.realCuganTileSize().get().coerceAtLeast(32))
             }
             .launchIn(lifecycleScope)
 
         readerPreferences.realCuganTileSize().changes()
             .onEach { size ->
-                val sleepMs = when (readerPreferences.realCuganPerformanceMode().get()) {
-                    0 -> 0
-                    1 -> 5
-                    2 -> 15
-                    else -> 0
+                withIOContext {
+                    val sleepMs = when (readerPreferences.realCuganPerformanceMode().get()) {
+                        0 -> 0
+                        1 -> 5
+                        2 -> 15
+                        else -> 0
+                    }
+                    Waifu2x.updatePerformance(sleepMs, size.coerceAtLeast(32))
                 }
-                Waifu2x.updatePerformance(sleepMs, size.coerceAtLeast(32))
             }
             .launchIn(lifecycleScope)
     }
