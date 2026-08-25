@@ -50,3 +50,43 @@ val Options.newDecoder: Boolean
     get() = getExtra(newDecoderKey)
 
 private val newDecoderKey = Extras.Key(default = false)
+
+fun ImageRequest.Builder.enhanced(enable: Boolean) = apply {
+    extras[enhancedKey] = enable
+}
+
+fun Options.isEnhanced(): Boolean = getExtra(enhancedKey)
+
+private val enhancedKey = Extras.Key(default = false)
+
+fun ImageRequest.Builder.mangaId(id: Long) = apply {
+    extras[mangaIdKey] = id
+}
+
+fun Options.mangaIdOrNull(): Long? = getExtra(mangaIdKey).takeIf { it != -1L }
+
+private val mangaIdKey = Extras.Key(default = -1L)
+
+fun ImageRequest.Builder.chapterId(id: Long) = apply {
+    extras[chapterIdKey] = id
+}
+
+fun Options.chapterIdOrNull(): Long? = getExtra(chapterIdKey).takeIf { it != -1L }
+
+private val chapterIdKey = Extras.Key(default = -1L)
+
+fun ImageRequest.Builder.pageIndex(index: Int) = apply {
+    extras[pageIndexKey] = index
+}
+
+fun Options.pageIndexOrNull(): Int? = getExtra(pageIndexKey).takeIf { it != -1 }
+
+private val pageIndexKey = Extras.Key(default = -1)
+
+fun ImageRequest.Builder.pageVariant(variant: String) = apply {
+    extras[pageVariantKey] = variant
+}
+
+fun Options.pageVariantOrNull(): String? = getExtra(pageVariantKey).takeIf { it.isNotEmpty() }
+
+private val pageVariantKey = Extras.Key(default = "")
