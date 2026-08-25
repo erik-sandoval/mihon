@@ -142,19 +142,48 @@ therefore rough merge risk:
 
 ## Interaction with panel detection
 
-No crop-math changes are needed. `PagerPageHolder.panelImageBytes` is read
+**The crop math itself is fine.** `PagerPageHolder.panelImageBytes` is read
 independently of Coil's decode path, and `PanelDetector`/`PanelPipeline`
 output normalized (0-1) crop rectangles — resolution-independent by
 construction (see CLAUDE.md's `panelStopTarget` section). Upscaling changes
-pixel resolution, not aspect ratio, so panel-by-panel crop rectangles remain
-valid whether the underlying bitmap is native-resolution or upscaled.
+pixel resolution, not aspect ratio, so a given panel's crop rectangle stays
+valid whether the underlying bitmap is native-resolution or upscaled 2x/3x.
 
-The one thing Track B item 2 must get right: confirm `panelImageBytes`
-continues to come from the original source stream. If it were accidentally
-rewired to the enhanced-decoder output, the ML panel detector's input would
-change without a corresponding `DETECTOR_VERSION` bump, silently producing
-stale/wrong cached panel results (per CLAUDE.md's `DETECTOR_VERSION`
-guidance).
+Track B item 2 must still confirm `panelImageBytes` continues to come from
+the original source stream. If it were accidentally rewired to the
+enhanced-decoder output, the ML panel detector's input would change without
+a corresponding `DETECTOR_VERSION` bump, silently producing stale/wrong
+cached panel results (per CLAUDE.md's `DETECTOR_VERSION` guidance).
+
+**The real risk is view state across an in-place bitmap swap, not crop math.**
+Confirmed by reading the source fork's `ReaderPageImageView.setProcessedSource()`:
+when background enhancement finishes for a page that's already the *currently
+displayed* page, it swaps the live `SubsamplingScaleImageView`'s source via
+`setImage(ImageSource...)` (behind a crossfade animation), with no positional
+bookkeeping around that call. This is safe in the source fork because it has
+no concept of panel stops — it only ever shows whole pages, so "reset to
+default fit-to-view" is indistinguishable from "already showing the whole
+page."
+
+That is not true here. The enhancement queue prioritizes the visible page but
+still runs in the background with real latency (worse at 3x on larger
+models), so the original image can already be displayed — with the user
+mid-panel-stop on it (e.g. panel 3 of 5) — when the swap happens. `setImage()`
+resets the view to its default centered/fit-to-view position, discarding the
+active panel stop. This is the same "viewer rebuilt from scratch, position
+lost" bug class already documented three times in CLAUDE.md
+(`state.manga` teardown, rotation restore, page-grid selection) — a fourth
+trigger for it, not one the source fork's code ever had to solve.
+
+**Required fix, part of Track B item 1:** before the enhanced-bitmap swap
+calls `setImage()`, capture the currently-active panel stop (if any); after
+`setImage()` completes, explicitly re-apply that stop via the existing
+`panelStopTarget`/`moveToPage` restore path, rather than accepting whatever
+`setImage()` defaults to. Same capture-before/restore-after pattern already
+established for `setPanEnabled(false)`'s recenter side effect. This needs a
+regression check during on-device validation (Rollout step 3): trigger a
+background upscale completion *while already mid-panel* on the page being
+enhanced, not just on page entry.
 
 ## Rollout / validation plan
 
@@ -174,6 +203,13 @@ guidance).
      crops are still correctly positioned, and panel-stop persistence
      (rotation restore, page-grid jump) still works per the existing
      CLAUDE.md guidance for that subsystem.
+   - **Specifically:** land on a page, wait for it to enter panel-by-panel
+     mode and step to a non-first panel stop (e.g. panel 3 of 5), *then* let
+     the background upscale finish for that same page while it's still on
+     screen — confirm the view stays on that panel stop rather than
+     snapping back to a default/full-page position when the enhanced bitmap
+     swaps in (see "Interaction with panel detection" above). Use a slower
+     model/3x scale if needed to make the timing window easy to hit.
    - Confirm the enhancement priority queue behaves sensibly while paging
      quickly back and forth (this is where the source fork's own
      preemption/reprioritization logic gets exercised).
