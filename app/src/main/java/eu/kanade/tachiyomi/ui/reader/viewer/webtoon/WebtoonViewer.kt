@@ -15,8 +15,10 @@ import eu.kanade.tachiyomi.ui.reader.ReaderActivity
 import eu.kanade.tachiyomi.ui.reader.model.ChapterTransition
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
+import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation.NavigationRegion
+import eu.kanade.tachiyomi.util.waifu2x.ImageEnhancer
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import mihon.app.di.appGraph
@@ -203,6 +205,16 @@ class WebtoonViewer(val activity: ReaderActivity, val isContinuous: Boolean = tr
         val pages = page.chapter.pages ?: return
         logcat { "onPageSelected: ${page.number}/${pages.size}" }
         activity.onPageSelected(page)
+
+        // WebtoonPageHolder sets controlsCurrentPageSelection = false on its frame (continuous
+        // scroll has no per-page onPageSelected(Boolean) call to drive this from — see
+        // ReaderPageImageView.onPageSelected), so this is webtoon's own equivalent of the
+        // pager's base-class preamble: without it, currentGlobalPageIndex stays at its initial
+        // value forever in webtoon mode (the enqueue-eligibility check and the polling
+        // self-heal window are both relative to it), and the enhancement queue is never
+        // reprioritized toward whatever page the user has actually scrolled to.
+        ReaderPageImageView.currentGlobalPageIndex = page.index
+        ImageEnhancer.reprioritizeAround(page.index, page.enhancementKeySuffix)
 
         // Preload next chapter once we're within the last 5 pages of the current chapter
         val inPreloadRange = pages.size - page.number < 5

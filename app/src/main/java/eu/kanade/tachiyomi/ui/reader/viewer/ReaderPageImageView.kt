@@ -129,17 +129,9 @@ open class ReaderPageImageView @JvmOverloads constructor(
     private val preloadSize: Int
         get() = if (realCuganEnabled) preferences.realCuganPreloadSize().get() else 4
 
-    // Performance mode: 0=full speed, 1=balanced, 2=power saving.
-    private val realCuganPerformanceMode: Int
-        get() = preferences.realCuganPerformanceMode().get()
-
-    private val tileSleepMs: Int
-        get() = when (realCuganPerformanceMode) {
-            0 -> 0
-            1 -> 5
-            2 -> 15
-            else -> 0
-        }
+    // realCuganPerformanceMode has no per-view read left — it only ever drove tileSleepMs, which
+    // fed the two global-state preference collectors now owned by ReaderActivity instead (see
+    // ReaderActivity.onCreate and the init block below).
 
     private val tileSize: Int
         get() = preferences.realCuganTileSize().get().coerceAtLeast(32)
@@ -185,6 +177,19 @@ open class ReaderPageImageView @JvmOverloads constructor(
      */
     var controlsCurrentPageSelection: Boolean = true
 
+    /**
+     * Whether a call to [onPageSelected] reflects the page genuinely being read right now, as
+     * opposed to a viewer-internal holder instantiation that happens to route through the same
+     * call (e.g. `PagerPageHolder`'s `init` block calls `onPageSelected` for every holder
+     * ViewPager instantiates, including offscreen neighbors prefetched — per this repo's own
+     * `offscreenPageLimit` — before the user ever swipes onto them). The default (true) is
+     * correct for every caller except `PagerPageHolder`, which overrides this to consult
+     * `PagerViewer.isCurrentReaderPage` — without that distinction, a prefetched neighbor's
+     * init-time call would prune the real current page's in-flight enhancement request out of
+     * the active window just because the neighbor was instantiated first.
+     */
+    protected open fun isGenuinePageSelection(): Boolean = true
+
     private val statusView: TextView by lazy {
         TextView(context).apply {
             layoutParams = LayoutParams(WRAP_CONTENT, WRAP_CONTENT).apply {
@@ -210,33 +215,28 @@ open class ReaderPageImageView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * The one collector in [init] that's genuinely per-view (updates this instance's own status
+     * label) rather than duplicating identical global state. Cancelled explicitly via
+     * [cancelPerViewPreferenceCollector] by holders whose [ReaderPageImageView] instance is truly
+     * one-shot (see that method's doc) — never by the shared [onDetachedFromWindow] below, since
+     * that also runs for pooled/reused holders (webtoon) that must keep collecting across
+     * bind/unbind cycles.
+     */
+    private var perViewPreferenceJob: Job? = null
+
     init {
-        // Check cache size and trim if needed (debounced internally to run at most once every
-        // few minutes) and react to performance/tile-size preference changes for as long as this
-        // view is alive.
+        // Debounced internally to run at most once every few minutes; cheap and safe to call
+        // from every view instance.
         viewScope.launchIO {
             ImageEnhancementCache.checkAndTrim(context)
-
-            preferences.realCuganPerformanceMode().changes()
-                .collect { mode ->
-                    val sleepMs = when (mode) {
-                        0 -> 0
-                        1 -> 5
-                        2 -> 15
-                        else -> 0
-                    }
-                    Waifu2x.updatePerformance(sleepMs, tileSize)
-                }
         }
 
-        viewScope.launchIO {
-            preferences.realCuganTileSize().changes()
-                .collect { size ->
-                    Waifu2x.updatePerformance(tileSleepMs, size.coerceAtLeast(32))
-                }
-        }
-
-        viewScope.launchIO {
+        // realCuganPerformanceMode/realCuganTileSize are NOT view-specific — they only ever
+        // drive the global Waifu2x.updatePerformance(...) native call, so they're owned once at
+        // the reader-activity level (ReaderActivity.onCreate) instead of duplicating an
+        // identical collector per page view, each racing to set the same global state.
+        perViewPreferenceJob = viewScope.launchIO {
             preferences.realCuganShowStatus().changes()
                 .collect { enabled ->
                     withUIContext {
@@ -250,6 +250,21 @@ open class ReaderPageImageView @JvmOverloads constructor(
                     }
                 }
         }
+    }
+
+    /**
+     * Cancels the per-view [realCuganShowStatus] preference collector started in [init]. Safe to
+     * call ONLY from a holder whose [ReaderPageImageView] instance is genuinely one-shot —
+     * created fresh per page and discarded, never reused (e.g. [PagerPageHolder], torn down by
+     * `ViewPagerAdapter.destroyItem` and never handed a different page afterward). Do NOT call
+     * this from a pooled/reused holder's teardown (e.g. `WebtoonPageHolder`'s frame, reused by
+     * RecyclerView across different pages) — its next `bind()` would silently stop reacting to
+     * the show-status preference for the rest of that instance's life, since nothing would ever
+     * restart this collector.
+     */
+    protected fun cancelPerViewPreferenceCollector() {
+        perViewPreferenceJob?.cancel()
+        perViewPreferenceJob = null
     }
 
     private fun updateStatus(text: String?) {
@@ -651,14 +666,27 @@ open class ReaderPageImageView @JvmOverloads constructor(
         targetConfig: Config?,
         setImageBlock: SubsamplingScaleImageView.() -> Unit,
     ) {
-        clearProcessedSwapView()
-
+        // Captured BEFORE clearProcessedSwapView() below: if a second swap starts while an
+        // earlier one is still mid-crossfade, `activeView` here is actually that first swap's
+        // (already-onReady'd) new view, not a genuinely idle one — clearProcessedSwapView()
+        // recycles exactly that view (it's still `processedSwapView` at this point), so reading
+        // its geometry afterward would silently come back as post-reset defaults (scale 0,
+        // center null), losing whatever zoom/panel-stop position was being carried forward.
         val targetScale = activeView.scale
         val targetCenter = activeView.center?.let { PointF(it.x, it.y) }
         val targetMinScale = activeView.minScale
         val targetWidth = activeView.sWidth
         val targetHeight = activeView.sHeight
-        outgoingProcessedView = activeView
+
+        clearProcessedSwapView()
+
+        // Prefer the current pageView over the (possibly now-stale/recycled, see above) activeView
+        // parameter: in the normal case they're the same view and this is a no-op; in the
+        // concurrent-swap case above, clearProcessedSwapView() already reassigned pageView back to
+        // the true outgoing raw view, so using it here avoids re-registering the just-recycled
+        // first-swap view as "outgoing" (which would leak the real outgoing view and later
+        // double-recycle the first swap's).
+        outgoingProcessedView = (pageView as? SubsamplingScaleImageView) ?: activeView
         val swapView = createSubsamplingPageView().apply {
             alpha = 0f
             isVisible = true
@@ -672,6 +700,15 @@ open class ReaderPageImageView @JvmOverloads constructor(
                         if (processedSwapView !== this@apply) return
 
                         setupZoom(targetConfig)
+
+                        // Must run before the wasZoomed/panel-mode branch below: jumpToPanelStop
+                        // (and anything else that resolves "the current view" via pageView) needs
+                        // to see the NEW view here, not the outgoing one that's about to fade out
+                        // and be discarded. Without this hoist, jumpToPanelStop would reposition
+                        // the outgoing view (a no-op for what's actually on screen) while the new
+                        // view stayed wherever setupZoom() left it — page-fit at minScale, exactly
+                        // the fallback position this whole branch exists to avoid.
+                        pageView = this@apply
 
                         val wasZoomed =
                             targetScale > 0f &&
@@ -694,15 +731,29 @@ open class ReaderPageImageView @JvmOverloads constructor(
                             // (not "zoomed in" per wasZoomed above) — re-derive position from the
                             // current panel stop against this view's own (possibly upscaled)
                             // dimensions instead of falling through to page-relative landscapeZoom,
-                            // which has no concept of panel stops at all.
+                            // which has no concept of panel stops at all. Resolves correctly against
+                            // this (new) view now that pageView points here (see above).
                             jumpToPanelStop(panelStopIndex)
                         } else if (isVisibleOnScreen()) {
                             landscapeZoom(true)
                         }
 
+                        // spotlightFor() only sets sourceView the first time it creates the
+                        // overlay — jumpToPanelStop's own spotlightFor(view) call above is a cache
+                        // hit here (the overlay already exists from this page's initial panel
+                        // setup) and never re-points it. Without this, sourceToViewCoord keeps
+                        // resolving against the outgoing view, which is about to be recycled, and
+                        // the dimming silently stops drawing for the rest of this page.
+                        panelSpotlight?.sourceView = this@apply
+
                         bringToFront()
                         statusView.bringToFront()
-                        pageView = this@apply
+                        // bringToFront() above just moved this new page view above the spotlight
+                        // overlay in z-order (the overlay was added once, well before any swap, and
+                        // never re-parented since) — pull it back on top so the dimming still
+                        // renders over the page image instead of underneath it.
+                        panelSpotlight?.bringToFront()
+                        panelSpotlight?.invalidate()
                         val revealStart = 0f
                         val revealEnd = 1f
                         val imageRect = displayedImageRect(this@apply)
@@ -806,6 +857,11 @@ open class ReaderPageImageView @JvmOverloads constructor(
                     val uri = android.net.Uri.fromFile(file)
                     setImage(ImageSource.uri(context, uri))
                 }
+                // The swap above re-reads the enhanced image straight from the file URI — the
+                // caller's already-decoded `bitmap` (used upstream only to validate the cache
+                // entry) is never actually displayed on this path and must be recycled here, or
+                // it's abandoned as tens of MB of native allocation per swap until GC gets to it.
+                bitmap.recycle()
                 currentLoadedUri = uriString
                 isVisible = true
                 return
@@ -1040,74 +1096,80 @@ open class ReaderPageImageView @JvmOverloads constructor(
         panelStopsEnterForward = forward
 
         // Reprioritize the enhancement queue and check cache status for the page actually being
-        // viewed — this runs regardless of viewer mode (panel-by-panel or plain paged).
-        val mId = readerPage?.chapter?.chapter?.manga_id ?: mangaId
-        val cId = readerPage?.chapter?.chapter?.id ?: chapterId
-        val pIdx = readerPage?.index ?: pageIndex
+        // viewed — this runs regardless of viewer mode (panel-by-panel or plain paged), but only
+        // for a genuine page selection (see isGenuinePageSelection): PagerPageHolder also routes
+        // its init-time, offscreen-prefetch call through here, and that call must not prune the
+        // real current page's in-flight enhancement request out of the window just because a
+        // neighbor holder happened to be instantiated first.
+        if (isGenuinePageSelection()) {
+            val mId = readerPage?.chapter?.chapter?.manga_id ?: mangaId
+            val cId = readerPage?.chapter?.chapter?.id ?: chapterId
+            val pIdx = readerPage?.index ?: pageIndex
 
-        if (controlsCurrentPageSelection && pIdx >= 0) {
-            currentGlobalPageIndex = pIdx
-            ImageEnhancer.reprioritizeAround(pIdx, enhancementVariant())
-        }
-
-        if (pIdx >= 0 && mId != -1L && cId != -1L) {
-            if (realCuganEnabled) {
-                ImageEnhancementCache.init(context)
-                val configHash = ImageEnhancementCache.getConfigHash(
-                    noise = realCuganNoiseLevel,
-                    scale = realCuganScale,
-                    model = realCuganModel,
-                    realEsrganStyle = preferences.realEsrganStyle().get(),
-                    maxWidth = realCuganMaxSizeWidth,
-                    maxHeight = realCuganMaxSizeHeight,
-                    skipMaxWidth = realCuganSkipMaxSizeWidth,
-                    skipMaxHeight = realCuganSkipMaxSizeHeight,
-                    tileSize = tileSize,
-                    precision = preferences.realCuganPrecision().get(),
-                    fp16Arithmetic = preferences.realCuganFp16Arithmetic().get(),
-                    processingBackend = preferences.realCuganProcessingBackend().get(),
-                )
-                val pageVariant = enhancementVariant()
-
-                val cachedFile = ImageEnhancementCache.getCachedImage(mId, cId, pIdx, configHash, pageVariant)
-                if (cachedFile != null) {
-                    logcat(LogPriority.DEBUG) { "ReaderPageImageView: onPageSelected - Page $pIdx found in cache" }
-                    val uriString = cachedFile.toURI().toString()
-                    if (currentLoadedUri != uriString) {
-                        viewScope.launchIO {
-                            val transformedSource = enhancedImageSourceFactory?.invoke(cachedFile)
-                            if (transformedSource != null) {
-                                withUIContext {
-                                    setProcessedSource(cachedFile, transformedSource = transformedSource)
-                                }
-                                return@launchIO
-                            }
-
-                            val bitmap = decodeEnhancedBitmap(cachedFile)
-
-                            if (bitmap != null) {
-                                withUIContext {
-                                    setProcessedSource(cachedFile, bitmap = bitmap)
-                                }
-                            } else {
-                                healInvalidEnhancedCache(mId, cId, pIdx, configHash, readerPage, forceCurrentPage = true)
-                                startEnhancementPolling(mId, cId, pIdx, configHash, readerPage)
-                            }
-                        }
-                    } else {
-                        updateStatus(context.stringResource(MR.strings.reader_status_processed))
-                    }
-                } else if (ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant)) {
-                    updateStatus(context.stringResource(MR.strings.reader_status_raw))
-                } else {
-                    updateStatus(context.stringResource(MR.strings.reader_status_processing))
-                    enqueueEnhancement(mId, cId, pIdx, highPriority = true)
-                    startEnhancementPolling(mId, cId, pIdx, configHash)
-                }
+            if (controlsCurrentPageSelection && pIdx >= 0) {
+                currentGlobalPageIndex = pIdx
+                ImageEnhancer.reprioritizeAround(pIdx, enhancementVariant())
             }
 
-            ImageEnhancer.cancelRequestsLessThan(context.applicationContext, mId, cId, pIdx)
-            ImageEnhancer.cancelRequestsGreaterThan(context.applicationContext, mId, cId, pIdx + preloadSize)
+            if (pIdx >= 0 && mId != -1L && cId != -1L) {
+                if (realCuganEnabled) {
+                    ImageEnhancementCache.init(context)
+                    val configHash = ImageEnhancementCache.getConfigHash(
+                        noise = realCuganNoiseLevel,
+                        scale = realCuganScale,
+                        model = realCuganModel,
+                        realEsrganStyle = preferences.realEsrganStyle().get(),
+                        maxWidth = realCuganMaxSizeWidth,
+                        maxHeight = realCuganMaxSizeHeight,
+                        skipMaxWidth = realCuganSkipMaxSizeWidth,
+                        skipMaxHeight = realCuganSkipMaxSizeHeight,
+                        tileSize = tileSize,
+                        precision = preferences.realCuganPrecision().get(),
+                        fp16Arithmetic = preferences.realCuganFp16Arithmetic().get(),
+                        processingBackend = preferences.realCuganProcessingBackend().get(),
+                    )
+                    val pageVariant = enhancementVariant()
+
+                    val cachedFile = ImageEnhancementCache.getCachedImage(mId, cId, pIdx, configHash, pageVariant)
+                    if (cachedFile != null) {
+                        logcat(LogPriority.DEBUG) { "ReaderPageImageView: onPageSelected - Page $pIdx found in cache" }
+                        val uriString = cachedFile.toURI().toString()
+                        if (currentLoadedUri != uriString) {
+                            viewScope.launchIO {
+                                val transformedSource = enhancedImageSourceFactory?.invoke(cachedFile)
+                                if (transformedSource != null) {
+                                    withUIContext {
+                                        setProcessedSource(cachedFile, transformedSource = transformedSource)
+                                    }
+                                    return@launchIO
+                                }
+
+                                val bitmap = decodeEnhancedBitmap(cachedFile)
+
+                                if (bitmap != null) {
+                                    withUIContext {
+                                        setProcessedSource(cachedFile, bitmap = bitmap)
+                                    }
+                                } else {
+                                    healInvalidEnhancedCache(mId, cId, pIdx, configHash, readerPage, forceCurrentPage = true)
+                                    startEnhancementPolling(mId, cId, pIdx, configHash, readerPage)
+                                }
+                            }
+                        } else {
+                            updateStatus(context.stringResource(MR.strings.reader_status_processed))
+                        }
+                    } else if (ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant)) {
+                        updateStatus(context.stringResource(MR.strings.reader_status_raw))
+                    } else {
+                        updateStatus(context.stringResource(MR.strings.reader_status_processing))
+                        enqueueEnhancement(mId, cId, pIdx, highPriority = true)
+                        startEnhancementPolling(mId, cId, pIdx, configHash)
+                    }
+                }
+
+                ImageEnhancer.cancelRequestsLessThan(context.applicationContext, mId, cId, pIdx)
+                ImageEnhancer.cancelRequestsGreaterThan(context.applicationContext, mId, cId, pIdx + preloadSize)
+            }
         }
 
         if (panelModeActive) {

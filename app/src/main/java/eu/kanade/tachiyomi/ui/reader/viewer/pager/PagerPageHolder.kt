@@ -195,6 +195,11 @@ class PagerPageHolder(
         directionJob = null
         debugOrderJob?.cancel()
         debugOrderJob = null
+        // Safe here specifically because PagerPageHolder is one-shot: ViewPagerAdapter.destroyItem
+        // discards this instance for good, it's never rebound to a different page afterward. See
+        // cancelPerViewPreferenceCollector's own doc for why the shared base-class
+        // onDetachedFromWindow can't do this unconditionally (WebtoonPageHolder's frame is reused).
+        cancelPerViewPreferenceCollector()
     }
 
     private fun initProgressIndicator() {
@@ -453,6 +458,19 @@ class PagerPageHolder(
             pageVariant = page.enhancementKeySuffix,
         )
     }
+
+    /**
+     * The base class's [onPageSelected] also drives enhancement-queue pruning
+     * (`cancelRequestsLessThan`/`cancelRequestsGreaterThan`) and the shared
+     * `currentGlobalPageIndex` — but [init] calls `onPageSelected` for every holder ViewPager
+     * instantiates, including offscreen neighbors prefetched (`offscreenPageLimit`) before the
+     * user actually swipes onto them. Without this override, a prefetched neighbor's init-time
+     * call would prune the real current page's in-flight enhancement request out of the active
+     * window just because the neighbor was instantiated first. [PagerViewer.isCurrentReaderPage]
+     * is the same check already used by [onPanelStopChanged] above for an analogous problem
+     * (a prefetched neighbor's own async result clobbering the real current page's saved state).
+     */
+    override fun isGenuinePageSelection(): Boolean = viewer.isCurrentReaderPage(page)
 
     override fun onImageLoaded() {
         super.onImageLoaded()

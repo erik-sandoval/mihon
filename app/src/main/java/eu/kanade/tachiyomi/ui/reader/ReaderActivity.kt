@@ -291,6 +291,34 @@ class ReaderActivity : BaseActivity() {
         if (readerPreferences.waifu2xEnabled().get()) {
             Waifu2x.init(this, readerPreferences.waifu2xNoiseLevel().get())
         }
+
+        // realCuganPerformanceMode/realCuganTileSize only ever drive the global
+        // Waifu2x.updatePerformance(...) native call — a single activity-scoped collector here,
+        // rather than one duplicated per ReaderPageImageView instance (each page view would
+        // otherwise race an identical collector to set the same global state).
+        readerPreferences.realCuganPerformanceMode().changes()
+            .onEach { mode ->
+                val sleepMs = when (mode) {
+                    0 -> 0
+                    1 -> 5
+                    2 -> 15
+                    else -> 0
+                }
+                Waifu2x.updatePerformance(sleepMs, readerPreferences.realCuganTileSize().get().coerceAtLeast(32))
+            }
+            .launchIn(lifecycleScope)
+
+        readerPreferences.realCuganTileSize().changes()
+            .onEach { size ->
+                val sleepMs = when (readerPreferences.realCuganPerformanceMode().get()) {
+                    0 -> 0
+                    1 -> 5
+                    2 -> 15
+                    else -> 0
+                }
+                Waifu2x.updatePerformance(sleepMs, size.coerceAtLeast(32))
+            }
+            .launchIn(lifecycleScope)
     }
 
     private fun ReaderActivityBinding.setComposeOverlay(): Unit = composeOverlay.setComposeContent {
