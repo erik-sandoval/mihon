@@ -11,4 +11,7 @@ open class ReaderPage(
 ) : Page(index, url, imageUrl, null) {
 
     open lateinit var chapter: ReaderChapter
+
+    var enhancementStream: (() -> InputStream)? = null
+    var enhancementKeySuffix: String = ""
 }

@@ -7,5 +7,7 @@ class InsertPage(val parent: ReaderPage) : ReaderPage(parent.index, parent.url, 
     init {
         status = State.Ready
         stream = parent.stream
+        enhancementStream = parent.enhancementStream
+        enhancementKeySuffix = parent.enhancementKeySuffix
     }
 }
