@@ -111,7 +111,7 @@ Add as a new top-level member of the `android {}` block (sibling to `defaultConf
 - [ ] **Step 6: Verify the native build compiles**
 
 Run: `./gradlew :app:externalNativeBuildDebug`
-Expected: `BUILD SUCCESSFUL`. Confirm with: `find app/.cxx -name libwaifu2x-jni.so` — should print at least one path under an `arm64-v8a` directory.
+Expected: `BUILD SUCCESSFUL`. Confirm with: `find app/build -name libwaifu2x-jni.so` — should print at least one path under an `arm64-v8a` directory (AGP places the built `.so` under `app/build/intermediates/cxx/...`, not `app/.cxx`, which only holds CMake configure metadata).
 If it fails with an NCNN `ncnnConfig.cmake` not found error, confirm Step 2 copied the SDK to the exact path `third_party/ncnn-20260113-android-vulkan` (case-sensitive, must match `bundledNcnnSdkDir` in Step 3).
 
 - [ ] **Step 7: Commit**
