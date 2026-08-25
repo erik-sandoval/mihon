@@ -7,6 +7,20 @@ import java.io.FileInputStream
 import java.util.Properties
 import kotlin.io.encoding.Base64
 
+private val localProperties = Properties().apply {
+    val file = rootProject.file("local.properties")
+    if (file.exists()) {
+        FileInputStream(file).use { load(it) }
+    }
+}
+
+val bundledNcnnSdkDir = rootProject.file("third_party/ncnn-20260113-android-vulkan")
+
+val ncnnSdkDir = providers.gradleProperty("ncnnSdkDir").orNull
+    ?: localProperties.getProperty("ncnn.sdk.dir")
+    ?: System.getenv("NCNN_SDK_DIR")
+    ?: bundledNcnnSdkDir.takeIf { it.exists() }?.absolutePath
+
 plugins {
     alias(mihonx.plugins.android.application)
     alias(mihonx.plugins.compose)
@@ -43,6 +57,22 @@ android {
         buildConfigField("boolean", "UPDATER_ENABLED", "${Config.enableUpdater}")
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        externalNativeBuild {
+            cmake {
+                if (!ncnnSdkDir.isNullOrBlank()) {
+                    arguments += "-DNCNN_SDK_DIR=$ncnnSdkDir"
+                }
+                abiFilters += "arm64-v8a"
+            }
+        }
+    }
+
+    externalNativeBuild {
+        cmake {
+            path = file("src/main/cpp/CMakeLists.txt")
+            version = "3.22.1"
+        }
     }
 
     if (System.getenv("MIHON_GITHUB_RELEASE").toBoolean()) {
