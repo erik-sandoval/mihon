@@ -15,6 +15,7 @@ import eu.kanade.tachiyomi.ui.reader.viewer.panel.Panel
 import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelRect
 import eu.kanade.tachiyomi.ui.reader.viewer.panel.flattenToStops
 import eu.kanade.tachiyomi.ui.webview.WebViewActivity
+import eu.kanade.tachiyomi.util.waifu2x.ImageEnhancer
 import eu.kanade.tachiyomi.widget.ViewPagerAdapter
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
@@ -429,6 +430,19 @@ class PagerPageHolder(
     private fun setError(error: Throwable?) {
         progressIndicator?.hide()
         showErrorLayout(error)
+    }
+
+    /**
+     * Called when this page becomes the active page in the pager (including the initial
+     * entry handled via the plain call in [init]). Reprioritizes the enhancement queue so the
+     * upscaler works on the page actually being viewed first.
+     */
+    override fun onPageSelected(forward: Boolean) {
+        super.onPageSelected(forward)
+        ImageEnhancer.reprioritizeAround(
+            pageIndex = page.index,
+            pageVariant = page.enhancementKeySuffix,
+        )
     }
 
     override fun onImageLoaded() {
