@@ -182,6 +182,17 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     }
 
     /**
+     * Under memory pressure, release what's safe to drop from the offscreen neighbor holders
+     * `pager` keeps instantiated (`offscreenPageLimit = 1`) — the current page is left untouched.
+     * See [PagerPageHolder.releaseOffscreenMemory].
+     */
+    override fun onTrimMemory() {
+        pager.children
+            .filterIsInstance(PagerPageHolder::class.java)
+            .forEach { it.releaseOffscreenMemory() }
+    }
+
+    /**
      * Creates a new ViewPager.
      */
     abstract fun createPager(): Pager

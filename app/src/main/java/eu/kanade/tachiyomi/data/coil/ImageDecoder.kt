@@ -18,6 +18,7 @@ import coil3.fetch.SourceFetchResult
 import coil3.request.Options
 import eu.kanade.domain.manga.model.upscaleEnabledOverride
 import eu.kanade.domain.manga.model.upscaleOverride
+import eu.kanade.domain.source.interactor.GetIncognitoState
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.setting.UpscaleEnabledOverride
 import eu.kanade.tachiyomi.ui.reader.setting.resolve
@@ -193,6 +194,7 @@ class ImageDecoder(private val resources: ImageSource, private val options: Opti
         val noiseLevel: Int,
         val scale: Int,
         val style: Int,
+        val incognito: Boolean,
     )
 
     /**
@@ -201,22 +203,30 @@ class ImageDecoder(private val resources: ImageSource, private val options: Opti
      * where set, otherwise the app-wide [ReaderPreferences] values. Device-performance knobs
      * (tile size, precision, backend, max/skip resolution, etc.) are always read straight from
      * [preferences] by callers — they're never part of either per-series override.
+     *
+     * Also resolves [ResolvedUpscaleSettings.incognito] here since it's the same manga lookup —
+     * [enhance] uses it to skip [ImageEnhancementCache] writes entirely for incognito reading, the
+     * same way [eu.kanade.tachiyomi.ui.reader.ReaderViewModel] already skips history/progress.
      */
     private suspend fun resolveUpscaleSettings(mangaId: Long, preferences: ReaderPreferences): ResolvedUpscaleSettings {
+        val appGraph = Injekt.get<Context>().appGraph
         val manga = try {
-            Injekt.get<Context>().appGraph.mangaRepository.getMangaById(mangaId)
+            appGraph.mangaRepository.getMangaById(mangaId)
         } catch (e: Exception) {
             logcat(LogPriority.WARN, e) { "ImageDecoder: Failed to resolve per-series upscale override for manga $mangaId" }
             null
         }
         val content = manga?.upscaleOverride
         val enabledOverride = manga?.upscaleEnabledOverride ?: UpscaleEnabledOverride.DEFAULT
+        val incognito = GetIncognitoState(appGraph.basePreferences, appGraph.sourcePreferences, appGraph.extensionManager)
+            .await(manga?.source)
         return ResolvedUpscaleSettings(
             enabled = enabledOverride.resolve(preferences.realCuganEnabled().get()),
             model = content?.model ?: preferences.realCuganModel().get(),
             noiseLevel = content?.noiseLevel ?: preferences.realCuganNoiseLevel().get(),
             scale = content?.scale ?: preferences.realCuganScale().get(),
             style = content?.style ?: preferences.realEsrganStyle().get(),
+            incognito = incognito,
         )
     }
 
@@ -253,7 +263,9 @@ class ImageDecoder(private val resources: ImageSource, private val options: Opti
                     "ImageDecoder: Skipping enhancement for page $pageIndex - source " +
                         "${bitmap.width}x${bitmap.height} exceeds max resolution ${skipMaxWidth}x$skipMaxHeight"
                 }
-                ImageEnhancementCache.saveSkippedToCache(mangaId, chapterId, pageIndex, configHash, pageVariant)
+                if (!settings.incognito) {
+                    ImageEnhancementCache.saveSkippedToCache(mangaId, chapterId, pageIndex, configHash, pageVariant)
+                }
                 return bitmap
             }
 
@@ -394,27 +406,32 @@ class ImageDecoder(private val resources: ImageSource, private val options: Opti
                 }
 
                 return if (ImageEnhancementCache.isDisplayable(result)) {
-                    // enqueueSaveToCache takes ownership of whatever bitmap it's given and
-                    // recycles it (synchronously on a cold cache dir/pending-save collision,
-                    // or asynchronously once the background save completes — either way,
-                    // unconditionally, success or reject; see its doc comment). `result` is
-                    // also what we're about to return for display, so it must never be the
-                    // same object handed to the cache — otherwise the cache pipeline can
-                    // recycle the page's own display bitmap out from under Coil/the pager
-                    // mid-draw. Hand the cache a private copy instead.
-                    val cacheBitmap = result.copy(result.config ?: Bitmap.Config.ARGB_8888, false)
-                    if (cacheBitmap != null) {
-                        ImageEnhancementCache.enqueueSaveToCache(
-                            mangaId,
-                            chapterId,
-                            pageIndex,
-                            configHash,
-                            cacheBitmap,
-                            pageVariant,
-                        )
-                    } else {
-                        logcat(LogPriority.WARN) {
-                            "ImageDecoder: Failed to copy enhanced result for cache write-back, page $pageIndex/$pageVariant"
+                    // Still enhance and display the page for incognito reading — only the
+                    // persisted disk-cache write-back is skipped, same as ReaderViewModel already
+                    // skips history/progress for incognito.
+                    if (!settings.incognito) {
+                        // enqueueSaveToCache takes ownership of whatever bitmap it's given and
+                        // recycles it (synchronously on a cold cache dir/pending-save collision,
+                        // or asynchronously once the background save completes — either way,
+                        // unconditionally, success or reject; see its doc comment). `result` is
+                        // also what we're about to return for display, so it must never be the
+                        // same object handed to the cache — otherwise the cache pipeline can
+                        // recycle the page's own display bitmap out from under Coil/the pager
+                        // mid-draw. Hand the cache a private copy instead.
+                        val cacheBitmap = result.copy(result.config ?: Bitmap.Config.ARGB_8888, false)
+                        if (cacheBitmap != null) {
+                            ImageEnhancementCache.enqueueSaveToCache(
+                                mangaId,
+                                chapterId,
+                                pageIndex,
+                                configHash,
+                                cacheBitmap,
+                                pageVariant,
+                            )
+                        } else {
+                            logcat(LogPriority.WARN) {
+                                "ImageDecoder: Failed to copy enhanced result for cache write-back, page $pageIndex/$pageVariant"
+                            }
                         }
                     }
                     ownsResult = false

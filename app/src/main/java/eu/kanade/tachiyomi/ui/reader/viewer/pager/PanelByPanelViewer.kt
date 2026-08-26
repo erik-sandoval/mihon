@@ -1,6 +1,7 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.pager
 
 import eu.kanade.domain.manga.model.panelByPanelDirection
+import eu.kanade.domain.source.interactor.GetIncognitoState
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
 import eu.kanade.tachiyomi.ui.reader.setting.PanelByPanelDirection
 import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelDetector
@@ -21,6 +22,9 @@ class PanelByPanelViewer(activity: ReaderActivity) : PagerViewer(activity) {
         context = activity.applicationContext,
         panelCacheRepository = graph.panelCacheRepository,
         panelFullPageOverrideRepository = graph.panelFullPageOverrideRepository,
+        // Computed once per reading session, same as ReaderViewModel.incognitoMode's own `by lazy`.
+        incognito = GetIncognitoState(graph.basePreferences, graph.sourcePreferences, graph.extensionManager)
+            .await(activity.viewModel.manga?.source),
     )
 
     // ReadingMode.PANEL_BY_PANEL has no direction of its own (unlike LEFT_TO_RIGHT/RIGHT_TO_LEFT),

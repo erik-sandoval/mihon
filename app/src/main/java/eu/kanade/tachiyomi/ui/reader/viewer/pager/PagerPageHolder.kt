@@ -385,6 +385,19 @@ class PagerPageHolder(
         }
     }
 
+    /**
+     * Releases memory that's safe to drop when this page isn't the one currently on screen —
+     * called from [PagerViewer.onTrimMemory] under system memory pressure. Only [panelImageBytes]
+     * (the raw encoded page bytes kept around so [directionJob] can re-detect without reloading)
+     * is meaningful to drop here; if a direction toggle arrives after this, [directionJob]'s
+     * existing `imageBytes ?: return@collectLatest` guard already treats a missing buffer as a
+     * safe no-op — the page just doesn't re-detect until it's revisited.
+     */
+    fun releaseOffscreenMemory() {
+        if (viewer.isCurrentReaderPage(page)) return
+        panelImageBytes = null
+    }
+
     private fun process(page: ReaderPage, imageSource: BufferedSource): BufferedSource {
         if (viewer.config.dualPageRotateToFit) {
             return rotateDualPage(imageSource)
@@ -516,9 +529,14 @@ class PagerPageHolder(
 
     /**
      * Removes the decode error layout from the holder, if found.
+     *
+     * Must actually detach the inflated view, not just hide it and drop the reference — leaving
+     * it attached meant a page cycling through error -> ready -> error (e.g. a flaky source)
+     * inflated and added a brand new [ReaderErrorBinding] each time via [showErrorLayout], while
+     * every previous one stayed attached to this ViewGroup forever, invisible and orphaned.
      */
     private fun removeErrorLayout() {
-        errorLayout?.root?.isVisible = false
+        errorLayout?.root?.let { removeView(it) }
         errorLayout = null
     }
 }

@@ -22,6 +22,15 @@ interface Viewer {
     fun destroy() {}
 
     /**
+     * Called when the system reports memory pressure (see [android.app.Activity.onTrimMemory]).
+     * Default no-op — only viewers holding onto extra per-page state beyond what's on screen
+     * (e.g. [eu.kanade.tachiyomi.ui.reader.viewer.pager.PagerViewer] retaining raw page bytes for
+     * panel re-detection) need to override this to release what's safe to drop for pages that
+     * aren't actually visible right now.
+     */
+    fun onTrimMemory() {}
+
+    /**
      * Tells this viewer to set the given [chapters] as active.
      */
     fun setChapters(chapters: ViewerChapters)

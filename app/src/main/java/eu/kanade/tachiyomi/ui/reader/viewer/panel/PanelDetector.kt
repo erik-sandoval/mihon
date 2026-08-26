@@ -17,6 +17,14 @@ class PanelDetector(
     context: Context,
     private val panelCacheRepository: PanelCacheRepository,
     private val panelFullPageOverrideRepository: PanelFullPageOverrideRepository,
+    /**
+     * Whether the current reading session is incognito — while true, [detect] still reads and
+     * returns detection results normally but skips persisting new ones via
+     * [PanelCacheRepository.save], the same way [ImageEnhancementCache][eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache]
+     * skips its disk-cache write-back and [eu.kanade.tachiyomi.ui.reader.ReaderViewModel] skips
+     * history/progress for incognito.
+     */
+    private val incognito: Boolean = false,
 ) {
     private val mlDetector by lazy { MlPanelBoundaryDetector.tryCreate(context) }
 
@@ -53,7 +61,7 @@ class PanelDetector(
         // low-confidence/decode-failure fallbacks inside runDetection ARE deterministic
         // given the same bytes+version and are fine to cache; they'll re-run automatically
         // on a future DETECTOR_VERSION bump.
-        if (timedOutOrPanels != null) {
+        if (timedOutOrPanels != null && !incognito) {
             withContext(Dispatchers.IO) {
                 panelCacheRepository.save(chapterId, page.index, hash, version, PanelPageData(panels))
             }

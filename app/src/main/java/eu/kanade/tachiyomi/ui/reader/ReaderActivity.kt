@@ -4,6 +4,7 @@ import android.annotation.SuppressLint
 import android.app.assist.AssistContent
 import android.content.ClipData
 import android.content.ClipboardManager
+import android.content.ComponentCallbacks2
 import android.content.Context
 import android.content.Intent
 import android.graphics.Color
@@ -47,6 +48,7 @@ import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import androidx.core.view.WindowInsetsControllerCompat
 import androidx.lifecycle.lifecycleScope
+import coil3.imageLoader
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import com.google.android.material.transition.platform.MaterialContainerTransform
 import com.hippo.unifile.UniFile
@@ -541,6 +543,25 @@ class ReaderActivity : BaseActivity() {
             viewModel.updateHistory()
         }
         super.onPause()
+    }
+
+    /**
+     * Confirmed real crash: a ~18-minute reading session climbed the Java heap from 84MB to the
+     * app's 512MB `largeHeap` cap with nothing in the reader ever responding to memory pressure,
+     * ending in an OutOfMemoryError inside SubsamplingScaleImageView's tile decode (52+ queued
+     * TileLoadTasks at the time of the crash). This can't reclaim the dominant cost — decoded tile
+     * bitmaps inside the vendored SubsamplingScaleImageView don't expose a way to trim them without
+     * fully recycling the view — but it releases what this app's own code controls: Coil's memory
+     * cache (shared app-wide, competing for the same heap) and the current viewer's offscreen
+     * per-page state (see [eu.kanade.tachiyomi.ui.reader.viewer.pager.PagerViewer.onTrimMemory]).
+     * A backstop, not a full fix for a source serving unusually large pages.
+     */
+    override fun onTrimMemory(level: Int) {
+        super.onTrimMemory(level)
+        if (level >= ComponentCallbacks2.TRIM_MEMORY_RUNNING_LOW) {
+            imageLoader.memoryCache?.clear()
+            viewModel.state.value.viewer?.onTrimMemory()
+        }
     }
 
     /**
