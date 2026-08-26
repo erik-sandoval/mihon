@@ -15,7 +15,6 @@ import eu.kanade.tachiyomi.ui.reader.viewer.panel.Panel
 import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelRect
 import eu.kanade.tachiyomi.ui.reader.viewer.panel.flattenToStops
 import eu.kanade.tachiyomi.ui.webview.WebViewActivity
-import eu.kanade.tachiyomi.util.waifu2x.ImageEnhancer
 import eu.kanade.tachiyomi.widget.ViewPagerAdapter
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.MainScope
@@ -119,6 +118,11 @@ class PagerPageHolder(
         mangaId = viewer.activity.viewModel.manga?.id ?: -1L
         chapterId = page.chapter.chapter.id ?: -1L
         readerPage = page
+        // InsertPage (a dual-page-split half) shares its parent's index and full-spread stream,
+        // which would otherwise collide with its sibling half's enhancement cache/request key and
+        // let the unsplit spread get swapped in once cached (see dualPageSplitActive's doc).
+        // Mirrors the panel-detection guard in setImage() below (viewer.config.dualPageSplit).
+        dualPageSplitActive = viewer.config.dualPageSplit || viewer.config.dualPageRotateToFit
 
         if (viewer is PanelByPanelViewer) {
             panelModeActive = true
@@ -444,19 +448,6 @@ class PagerPageHolder(
     private fun setError(error: Throwable?) {
         progressIndicator?.hide()
         showErrorLayout(error)
-    }
-
-    /**
-     * Called when this page becomes the active page in the pager (including the initial
-     * entry handled via the plain call in [init]). Reprioritizes the enhancement queue so the
-     * upscaler works on the page actually being viewed first.
-     */
-    override fun onPageSelected(forward: Boolean) {
-        super.onPageSelected(forward)
-        ImageEnhancer.reprioritizeAround(
-            pageIndex = page.index,
-            pageVariant = page.enhancementKeySuffix,
-        )
     }
 
     /**

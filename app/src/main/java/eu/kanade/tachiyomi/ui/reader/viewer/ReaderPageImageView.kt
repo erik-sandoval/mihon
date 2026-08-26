@@ -63,7 +63,6 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
 import kotlinx.coroutines.isActive
-import kotlinx.coroutines.sync.Semaphore
 import logcat.LogPriority
 import mihon.app.di.appGraph
 import okio.Buffer
@@ -100,7 +99,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
     private val preferences: ReaderPreferences by lazy { Injekt.get<Context>().appGraph.readerPreferences }
 
     private val realCuganEnabled: Boolean
-        get() = preferences.realCuganEnabled().get()
+        get() = preferences.realCuganEnabled().get() && !dualPageSplitActive
 
     private val realCuganNoiseLevel: Int
         get() = preferences.realCuganNoiseLevel().get()
@@ -350,6 +349,19 @@ open class ReaderPageImageView @JvmOverloads constructor(
 
     /** Set by [PagerPageHolder] before load starts, when this page belongs to a panel-by-panel viewer. */
     var panelModeActive: Boolean = false
+
+    /**
+     * Set by [PagerPageHolder] before load starts, true when dual-page splitting/rotate-to-fit is
+     * active for this page. `InsertPage` gives a split half the *same* index and the *same*
+     * (full, unsplit) stream as its parent, so it would resolve to the identical enhancement
+     * cache/request key as its sibling half — `ImageEnhancer.enhanceLazy`'s de-duplication would
+     * silently drop one, and the unsplit spread (nothing wires a per-half stream override) is what
+     * would actually get fed to the upscaler. Once that finishes and gets cached, the enhanced
+     * *whole spread* would get swapped onto both display halves, undoing the split. Enhancement is
+     * skipped entirely for these pages via [realCuganEnabled] below rather than attempting full
+     * per-half-variant wiring.
+     */
+    var dualPageSplitActive: Boolean = false
 
     private var panelStops: List<PanelRect> = emptyList()
     private var panelStopIndex: Int = -1
@@ -1768,14 +1780,6 @@ open class ReaderPageImageView @JvmOverloads constructor(
 
     companion object {
         var currentGlobalPageIndex: Int = -1
-
-        /**
-         * Global semaphore to serialize image decoding. Native HEIF decoders on some devices are
-         * not thread-safe and can SIGSEGV if used concurrently. Currently unused within this file
-         * (this repo's own decode path — [ImageDecoder] — has its own separate semaphore); kept
-         * public for parity with the source fork in case a future caller needs a single shared one.
-         */
-        val decodeSemaphore = Semaphore(1)
     }
 }
 
