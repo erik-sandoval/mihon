@@ -26,16 +26,16 @@ class PanelByPanelViewer(activity: ReaderActivity) : PagerViewer(activity) {
     // ReadingMode.PANEL_BY_PANEL has no direction of its own (unlike LEFT_TO_RIGHT/RIGHT_TO_LEFT),
     // so panel order is tracked by a per-series override (PanelByPanelDirection, stored on the
     // manga itself, same as reading mode/orientation) that falls back to the app-wide
-    // panelByPanelRightToLeft preference when unset — this is what keeps one series' direction
+    // panelByPanelLeftToRight preference when unset — this is what keeps one series' direction
     // from bleeding into every other series read in panel-by-panel mode.
     val panelDirection: PanelDirection
-        get() = resolveDirection(activity.viewModel.manga?.panelByPanelDirection?.toInt(), readerPreferences.panelByPanelRightToLeft.get())
+        get() = resolveDirection(activity.viewModel.manga?.panelByPanelDirection?.toInt(), !readerPreferences.panelByPanelLeftToRight.get())
 
     /** Reactive counterpart of [panelDirection], for re-running detection when either the per-series override or the app-wide default changes. */
     val panelDirectionFlow: Flow<PanelDirection> = combine(
         activity.viewModel.state.map { it.manga?.panelByPanelDirection }.distinctUntilChanged(),
-        readerPreferences.panelByPanelRightToLeft.changes(),
-    ) { mangaOverride, globalRtl -> resolveDirection(mangaOverride?.toInt(), globalRtl) }
+        readerPreferences.panelByPanelLeftToRight.changes(),
+    ) { mangaOverride, globalLeftToRight -> resolveDirection(mangaOverride?.toInt(), !globalLeftToRight) }
 
     private fun resolveDirection(mangaOverrideFlag: Int?, globalRtl: Boolean): PanelDirection {
         val rtl = when (PanelByPanelDirection.fromPreference(mangaOverrideFlag)) {

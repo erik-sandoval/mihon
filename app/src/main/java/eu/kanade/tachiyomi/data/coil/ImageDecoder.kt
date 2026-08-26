@@ -16,7 +16,11 @@ import coil3.decode.Decoder
 import coil3.decode.ImageSource
 import coil3.fetch.SourceFetchResult
 import coil3.request.Options
+import eu.kanade.domain.manga.model.upscaleEnabledOverride
+import eu.kanade.domain.manga.model.upscaleOverride
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
+import eu.kanade.tachiyomi.ui.reader.setting.UpscaleEnabledOverride
+import eu.kanade.tachiyomi.ui.reader.setting.resolve
 import eu.kanade.tachiyomi.util.system.GLUtil
 import eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache
 import eu.kanade.tachiyomi.util.waifu2x.Waifu2x
@@ -122,13 +126,14 @@ class ImageDecoder(private val resources: ImageSource, private val options: Opti
      * its manga/chapter/page tags, or nothing is cached yet for the current config (including
      * when a cached file exists but fails to decode/display, in which case it's removed).
      */
-    private fun decodeCachedEnhancedImage(): Bitmap? {
+    private suspend fun decodeCachedEnhancedImage(): Bitmap? {
         if (!options.isEnhanced()) return null
 
         val preferences = readerPreferences()
-        if (!preferences.realCuganEnabled().get()) return null
-
         val mangaId = options.mangaIdOrNull() ?: return null
+        val settings = resolveUpscaleSettings(mangaId, preferences)
+        if (!settings.enabled) return null
+
         val chapterId = options.chapterIdOrNull() ?: return null
         val pageIndex = options.pageIndexOrNull() ?: return null
         val pageVariant = options.pageVariantOrNull() ?: ""
@@ -136,7 +141,7 @@ class ImageDecoder(private val resources: ImageSource, private val options: Opti
         val context = Injekt.get<Context>()
         ImageEnhancementCache.init(context)
 
-        val configHash = buildConfigHash(preferences)
+        val configHash = buildConfigHash(preferences, settings)
         val cachedFile = ImageEnhancementCache.getCachedImage(mangaId, chapterId, pageIndex, configHash, pageVariant)
             ?: return null
 
@@ -163,14 +168,56 @@ class ImageDecoder(private val resources: ImageSource, private val options: Opti
         if (!options.isEnhanced()) return bitmap
 
         val preferences = readerPreferences()
-        if (!preferences.realCuganEnabled().get()) return bitmap
-
         val mangaId = options.mangaIdOrNull() ?: return bitmap
+        val settings = resolveUpscaleSettings(mangaId, preferences)
+        if (!settings.enabled) return bitmap
+
         val chapterId = options.chapterIdOrNull() ?: return bitmap
         val pageIndex = options.pageIndexOrNull() ?: return bitmap
         val pageVariant = options.pageVariantOrNull() ?: ""
 
-        return enhance(bitmap, mangaId, chapterId, pageIndex, pageVariant, preferences)
+        return enhance(bitmap, mangaId, chapterId, pageIndex, pageVariant, preferences, settings)
+    }
+
+    /**
+     * The effective per-manga upscale settings this decoder actually needs — [enabled] and the
+     * [eu.kanade.tachiyomi.ui.reader.setting.MangaUpscaleSettings] content fields resolved
+     * separately (see [UpscaleEnabledOverride]'s doc comment for why they're independent
+     * per-series overrides rather than one bundled struct), then flattened back into a single
+     * object here since every downstream caller (`buildConfigHash`/`enhance`) just wants to read
+     * all five values together.
+     */
+    private data class ResolvedUpscaleSettings(
+        val enabled: Boolean,
+        val model: Int,
+        val noiseLevel: Int,
+        val scale: Int,
+        val style: Int,
+    )
+
+    /**
+     * Resolves the effective upscale settings for [mangaId] — its per-series overrides
+     * ([eu.kanade.domain.manga.model.upscaleEnabledOverride]/[eu.kanade.domain.manga.model.upscaleOverride])
+     * where set, otherwise the app-wide [ReaderPreferences] values. Device-performance knobs
+     * (tile size, precision, backend, max/skip resolution, etc.) are always read straight from
+     * [preferences] by callers — they're never part of either per-series override.
+     */
+    private suspend fun resolveUpscaleSettings(mangaId: Long, preferences: ReaderPreferences): ResolvedUpscaleSettings {
+        val manga = try {
+            Injekt.get<Context>().appGraph.mangaRepository.getMangaById(mangaId)
+        } catch (e: Exception) {
+            logcat(LogPriority.WARN, e) { "ImageDecoder: Failed to resolve per-series upscale override for manga $mangaId" }
+            null
+        }
+        val content = manga?.upscaleOverride
+        val enabledOverride = manga?.upscaleEnabledOverride ?: UpscaleEnabledOverride.DEFAULT
+        return ResolvedUpscaleSettings(
+            enabled = enabledOverride.resolve(preferences.realCuganEnabled().get()),
+            model = content?.model ?: preferences.realCuganModel().get(),
+            noiseLevel = content?.noiseLevel ?: preferences.realCuganNoiseLevel().get(),
+            scale = content?.scale ?: preferences.realCuganScale().get(),
+            style = content?.style ?: preferences.realEsrganStyle().get(),
+        )
     }
 
     private suspend fun enhance(
@@ -180,19 +227,20 @@ class ImageDecoder(private val resources: ImageSource, private val options: Opti
         pageIndex: Int,
         pageVariant: String,
         preferences: ReaderPreferences,
+        settings: ResolvedUpscaleSettings,
     ): Bitmap {
         // A single mutable reference is used throughout so that, whatever happens (including an
         // exception caught below), it always points to a valid, non-recycled bitmap to return.
         var bitmap = source
         val context = Injekt.get<Context>()
         ImageEnhancementCache.init(context)
-        val configHash = buildConfigHash(preferences)
+        val configHash = buildConfigHash(preferences, settings)
 
         try {
-            val model = preferences.realCuganModel().get()
-            val realEsrganStyle = preferences.realEsrganStyle().get()
-            val noise = preferences.realCuganNoiseLevel().get()
-            val scale = preferences.realCuganScale().get()
+            val model = settings.model
+            val realEsrganStyle = settings.style
+            val noise = settings.noiseLevel
+            val scale = settings.scale
 
             // --- Resolution limit gate: skip enhancement entirely for oversized sources ---
             val skipMaxWidth = preferences.realCuganSkipMaxSizeWidth().get()
@@ -398,12 +446,12 @@ class ImageDecoder(private val resources: ImageSource, private val options: Opti
 
     private fun readerPreferences(): ReaderPreferences = Injekt.get<Context>().appGraph.readerPreferences
 
-    private fun buildConfigHash(preferences: ReaderPreferences): String {
+    private fun buildConfigHash(preferences: ReaderPreferences, settings: ResolvedUpscaleSettings): String {
         return ImageEnhancementCache.getConfigHash(
-            noise = preferences.realCuganNoiseLevel().get(),
-            scale = preferences.realCuganScale().get(),
-            model = preferences.realCuganModel().get(),
-            realEsrganStyle = preferences.realEsrganStyle().get(),
+            noise = settings.noiseLevel,
+            scale = settings.scale,
+            model = settings.model,
+            realEsrganStyle = settings.style,
             maxWidth = preferences.realCuganMaxSizeWidth().get(),
             maxHeight = preferences.realCuganMaxSizeHeight().get(),
             skipMaxWidth = preferences.realCuganSkipMaxSizeWidth().get(),

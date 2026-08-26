@@ -45,9 +45,14 @@ import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView.EASE_OUT_QU
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView.SCALE_TYPE_CENTER_INSIDE
 import com.github.chrisbanes.photoview.PhotoView
 import eu.kanade.tachiyomi.data.coil.cropBorders
+import eu.kanade.domain.manga.model.upscaleEnabledOverride
+import eu.kanade.domain.manga.model.upscaleOverride
 import eu.kanade.tachiyomi.data.coil.customDecoder
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
+import eu.kanade.tachiyomi.ui.reader.setting.MangaUpscaleSettings
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
+import eu.kanade.tachiyomi.ui.reader.setting.UpscaleEnabledOverride
+import eu.kanade.tachiyomi.ui.reader.setting.resolve
 import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelRect
 import eu.kanade.tachiyomi.ui.reader.viewer.webtoon.WebtoonSubsamplingImageView
 import eu.kanade.tachiyomi.util.system.animatorDurationScale
@@ -103,16 +108,19 @@ open class ReaderPageImageView @JvmOverloads constructor(
     private val preferences: ReaderPreferences by lazy { Injekt.get<Context>().appGraph.readerPreferences }
 
     private val realCuganEnabled: Boolean
-        get() = preferences.realCuganEnabled().get() && !dualPageSplitActive
+        get() = resolvedUpscaleEnabledOverride.resolve(preferences.realCuganEnabled().get()) && !dualPageSplitActive
 
     private val realCuganNoiseLevel: Int
-        get() = preferences.realCuganNoiseLevel().get()
+        get() = resolvedUpscaleOverride?.noiseLevel ?: preferences.realCuganNoiseLevel().get()
 
     private val realCuganScale: Int
-        get() = preferences.realCuganScale().get()
+        get() = resolvedUpscaleOverride?.scale ?: preferences.realCuganScale().get()
 
     private val realCuganModel: Int
-        get() = preferences.realCuganModel().get()
+        get() = resolvedUpscaleOverride?.model ?: preferences.realCuganModel().get()
+
+    private val realEsrganStyle: Int
+        get() = resolvedUpscaleOverride?.style ?: preferences.realEsrganStyle().get()
 
     private val realCuganMaxSizeWidth: Int
         get() = preferences.realCuganMaxSizeWidth().get()
@@ -152,16 +160,87 @@ open class ReaderPageImageView @JvmOverloads constructor(
     private var outgoingProcessedView: SubsamplingScaleImageView? = null
     private var processedSwapAnimator: ValueAnimator? = null
 
+    /** Repeatable factory for the raw (un-enhanced) page source — see [setImage]'s doc on it. */
+    private var currentStreamFn: (() -> java.io.InputStream)? = null
+
+    /**
+     * True once [pageView] itself (not just [enhancedOverlay]) has been swapped to show an
+     * enhanced file — either directly (the [setProcessedSource] `bitmap != null` branch) or via a
+     * completed [animateProcessedSwap] crossfade, both of which replace [pageView]'s actual image
+     * source rather than merely overlaying it. [refreshEnhancementForCurrentPage] uses this to
+     * know whether turning enhancement off needs to reload the raw image, not just hide an
+     * overlay.
+     */
+    private var isShowingEnhancedFile = false
+
     var onImageLoaded: (() -> Unit)? = null
     var onImageLoadError: ((Throwable?) -> Unit)? = null
     var onScaleChanged: ((newScale: Float) -> Unit)? = null
     var onViewClicked: (() -> Unit)? = null
 
+    /**
+     * This page's per-series [eu.kanade.domain.manga.model.upscaleOverride] and
+     * [eu.kanade.domain.manga.model.upscaleEnabledOverride] — two independent overrides (see
+     * [UpscaleEnabledOverride]'s doc comment for why) — resolved once asynchronously whenever the
+     * effective manga id changes (see [refreshResolvedUpscaleOverride]) and cached here for the
+     * synchronous `realCugan*` properties below to read — a DB lookup can't happen inline in a
+     * plain property getter. Null/[UpscaleEnabledOverride.DEFAULT] while unresolved or absent, in
+     * which case those properties fall back to the app-wide [ReaderPreferences] values, same as
+     * before either override existed. Declared before [mangaId]/[readerPage] below: their setters
+     * call [refreshResolvedUpscaleOverride] immediately, including during their own property
+     * initializers, so these need to already be initialized by then, not merely declared later in
+     * the file.
+     */
+    private var resolvedUpscaleOverride: MangaUpscaleSettings? = null
+    private var resolvedUpscaleEnabledOverride: UpscaleEnabledOverride = UpscaleEnabledOverride.DEFAULT
+    private var resolvedUpscaleOverrideForMangaId: Long = -1L
+
     /** Helper identity fields for the enhancement pipeline; set by the page holder before/at bind time. */
     var pageIndex: Int = -1
     var mangaId: Long = -1L
+        set(value) {
+            field = value
+            refreshResolvedUpscaleOverride()
+        }
     var chapterId: Long = -1L
     var readerPage: ReaderPage? = null
+        set(value) {
+            field = value
+            refreshResolvedUpscaleOverride()
+        }
+
+    /**
+     * The effective manga id for this view right now — [readerPage] is the primary source (set by
+     * most page holders); [mangaId] is a fallback used directly by holders that don't go through a
+     * [ReaderPage] (e.g. a composite/secondary view). Mirrors the same fallback already used
+     * throughout this class (e.g. [refreshEnhancementForCurrentPage]'s `mId`).
+     */
+    private val effectiveMangaId: Long
+        get() = readerPage?.chapter?.chapter?.manga_id ?: mangaId
+
+    private fun refreshResolvedUpscaleOverride() {
+        val targetMangaId = effectiveMangaId
+        if (targetMangaId == resolvedUpscaleOverrideForMangaId) return
+        resolvedUpscaleOverride = null
+        resolvedUpscaleEnabledOverride = UpscaleEnabledOverride.DEFAULT
+        resolvedUpscaleOverrideForMangaId = targetMangaId
+        if (targetMangaId == -1L) return
+        viewScope.launchIO {
+            val manga = try {
+                Injekt.get<Context>().appGraph.mangaRepository.getMangaById(targetMangaId)
+            } catch (e: Exception) {
+                null
+            }
+            withUIContext {
+                // Guard against a slow lookup for a since-recycled/rebound-to-a-different-manga
+                // view landing after the fact and clobbering a newer, already-correct result.
+                if (effectiveMangaId == targetMangaId) {
+                    resolvedUpscaleOverride = manga?.upscaleOverride
+                    resolvedUpscaleEnabledOverride = manga?.upscaleEnabledOverride ?: UpscaleEnabledOverride.DEFAULT
+                }
+            }
+        }
+    }
 
     /** Alternate source for a page's enhancement key/stream, used when [readerPage] doesn't apply directly. */
     var enhancementVariantOverride: String? = null
@@ -541,7 +620,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
             noise = realCuganNoiseLevel,
             scale = realCuganScale,
             model = realCuganModel,
-            realEsrganStyle = preferences.realEsrganStyle().get(),
+            realEsrganStyle = realEsrganStyle,
             maxWidth = realCuganMaxSizeWidth,
             maxHeight = realCuganMaxSizeHeight,
             skipMaxWidth = realCuganSkipMaxSizeWidth,
@@ -869,6 +948,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 animateProcessedSwap(activeView, config) {
                     setImage(ImageSource.inputStream(transformedSource.inputStream()))
                 }
+                isShowingEnhancedFile = true
             } else {
                 val previewBitmap = try {
                     android.graphics.BitmapFactory.decodeStream(transformedSource.peek().inputStream())
@@ -914,6 +994,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 // it's abandoned as tens of MB of native allocation per swap until GC gets to it.
                 bitmap.recycle()
                 currentLoadedUri = uriString
+                isShowingEnhancedFile = true
                 isVisible = true
                 return
             }
@@ -931,6 +1012,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
         val uri = android.net.Uri.fromFile(file)
         (pageView as? SubsamplingScaleImageView)?.setImage(ImageSource.uri(context, uri))
         currentLoadedUri = uriString
+        isShowingEnhancedFile = true
         isVisible = true
     }
 
@@ -962,7 +1044,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
             noise = realCuganNoiseLevel,
             scale = realCuganScale,
             model = realCuganModel,
-            realEsrganStyle = preferences.realEsrganStyle().get(),
+            realEsrganStyle = realEsrganStyle,
             maxWidth = realCuganMaxSizeWidth,
             maxHeight = realCuganMaxSizeHeight,
             skipMaxWidth = realCuganSkipMaxSizeWidth,
@@ -1163,7 +1245,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 noise = realCuganNoiseLevel,
                 scale = realCuganScale,
                 model = realCuganModel,
-                realEsrganStyle = preferences.realEsrganStyle().get(),
+                realEsrganStyle = realEsrganStyle,
                 maxWidth = realCuganMaxSizeWidth,
                 maxHeight = realCuganMaxSizeHeight,
                 skipMaxWidth = realCuganSkipMaxSizeWidth,
@@ -1210,10 +1292,53 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 enqueueEnhancement(mId, cId, pIdx, highPriority = true)
                 startEnhancementPolling(mId, cId, pIdx, configHash)
             }
+        } else {
+            revertToRawImage()
         }
 
         ImageEnhancer.cancelRequestsLessThan(context.applicationContext, mId, cId, pIdx)
         ImageEnhancer.cancelRequestsGreaterThan(context.applicationContext, mId, cId, pIdx + preloadSize)
+    }
+
+    /**
+     * Undoes whatever [setProcessedSource] did, so the page goes back to showing its original,
+     * un-upscaled pixels once enhancement is turned off (globally, or via a per-series override —
+     * see [realCuganEnabled]) for a page that's already displaying an enhanced version. No-ops
+     * when nothing enhanced is currently showing.
+     *
+     * There are two things to undo, independently of each other: the lightweight [enhancedOverlay]
+     * preview (tracked by [isSettingProcessedImage]) that sits on top without touching [pageView]
+     * itself, and — once a crossfade in [setProcessedSource] completes, or its direct-bitmap
+     * branch runs — [pageView]'s own image source having been replaced outright (tracked by
+     * [isShowingEnhancedFile]). The latter needs the raw page reloaded from [currentStreamFn]; the
+     * former is just a hide.
+     */
+    private fun revertToRawImage() {
+        if (isSettingProcessedImage) {
+            pageView?.alpha = 1f
+            enhancedOverlay.animate().cancel()
+            enhancedOverlay.setImageBitmap(null)
+            enhancedOverlay.isVisible = false
+            enhancedBitmap?.recycle()
+            enhancedBitmap = null
+            isSettingProcessedImage = false
+        }
+
+        if (isShowingEnhancedFile) {
+            clearProcessedSwapView()
+            val activeView = pageView as? SubsamplingScaleImageView
+            val streamFn = currentStreamFn
+            if (activeView != null && streamFn != null) {
+                try {
+                    activeView.setImage(ImageSource.inputStream(streamFn()))
+                } catch (e: Exception) {
+                    logcat(LogPriority.WARN, e) { "ReaderPageImageView: Failed to reload raw image after disabling enhancement" }
+                }
+            }
+            currentLoadedUri = null
+            isShowingEnhancedFile = false
+            updateStatus(context.stringResource(MR.strings.reader_status_raw))
+        }
     }
 
     open fun onPageSelected(forward: Boolean) {
@@ -1518,6 +1643,13 @@ open class ReaderPageImageView @JvmOverloads constructor(
         streamFn: (() -> java.io.InputStream)? = null,
     ) {
         this.config = config
+        // Kept around so refreshEnhancementForCurrentPage() can reload the raw page if enhancement
+        // gets turned off while this page's enhanced version is already on screen (see
+        // isShowingEnhancedFile) — the original BufferedSource is consumed after one read, so a
+        // repeatable stream factory is the only way back to the un-enhanced image without
+        // re-fetching from the page loader.
+        currentStreamFn = streamFn
+        isShowingEnhancedFile = false
         if (isAnimated) {
             prepareAnimatedImageView()
             setAnimatedImage(source, config)
@@ -1543,6 +1675,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
             enhancedBitmap?.recycle()
             enhancedBitmap = null
             isSettingProcessedImage = false
+            isShowingEnhancedFile = false
             currentLoadedUri = null
             invalidate()
         }

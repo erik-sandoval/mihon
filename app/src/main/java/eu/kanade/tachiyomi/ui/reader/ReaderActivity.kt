@@ -238,14 +238,17 @@ class ReaderActivity : BaseActivity() {
             .distinctUntilChanged()
             .filterNotNull()
             .onEach { viewerChapters ->
-                // distinctUntilChanged on the ViewerChapters reference fires specifically when the
-                // chapters actually change (as opposed to the ReloadViewerChapters event below,
-                // which replays the *same* viewerChapters value to reload the viewer for a
-                // reading-mode/orientation toggle) — cancelRequestsLessThan/GreaterThan only prune
-                // by matching mangaId/chapterId, so a request queued under a previous chapter can
-                // never be pruned by them; reset the whole enhancement queue here instead (see
-                // final-review finding: ImageEnhancer.reset had zero production call sites).
-                ImageEnhancer.reset(viewerChapters.currChapter.requestedPage)
+                // distinctUntilChanged's "previous value" memory is scoped to this collection, so
+                // this fires once for the *first* value on every fresh collection — including a
+                // collection started by ReaderActivity being recreated for a config change (e.g.
+                // rotation), even though the chapter itself didn't change. ImageEnhancer.reset()
+                // guards against that redundant call itself (keyed on chapter id), so calling it
+                // unconditionally here is safe — cancelRequestsLessThan/GreaterThan only prune by
+                // matching mangaId/chapterId, so a request queued under a genuinely previous
+                // chapter can never be pruned by them; reset the whole enhancement queue here
+                // instead (see final-review finding: ImageEnhancer.reset had zero production call
+                // sites).
+                ImageEnhancer.reset(viewerChapters.currChapter.chapter.id ?: -1L, viewerChapters.currChapter.requestedPage)
                 setChapters(viewerChapters)
             }
             .launchIn(lifecycleScope)
@@ -355,6 +358,8 @@ class ReaderActivity : BaseActivity() {
                 onChangeReadingMode = viewModel::setMangaReadingMode,
                 onChangeOrientation = viewModel::setMangaOrientationType,
                 onChangePanelByPanelDirection = viewModel::setMangaPanelByPanelDirection,
+                onChangeUpscaleOverride = viewModel::setMangaUpscaleOverride,
+                onChangeUpscaleEnabledOverride = viewModel::setMangaUpscaleEnabledOverride,
                 preferences = readerPreferences,
             )
         }
@@ -512,11 +517,19 @@ class ReaderActivity : BaseActivity() {
         super.onDestroy()
         uiBusyJob?.cancel()
         Waifu2x.setUiBusy(false)
-        // Stop any in-flight/queued Vulkan inference and release the native model — otherwise
-        // leaving the reader lets background upscaling keep running to completion on its own, and
-        // the native model is never released (see final-review finding: ImageEnhancer.cancelAll
-        // had zero production call sites).
-        ImageEnhancer.cancelAll("reader closed")
+        // onDestroy() also fires when the Activity is destroyed purely to be recreated for a
+        // config change (e.g. rotation — ReaderActivity has no android:configChanges entry, so
+        // every rotation is a real destroy+recreate). isChangingConfigurations distinguishes that
+        // from an actual "leaving the reader" close. Without this guard, rotating mid-upscale
+        // aborted the in-flight Waifu2x job and released the native model on every turn, which
+        // looked like the upscale silently restarting from scratch after each rotation.
+        if (!isChangingConfigurations) {
+            // Stop any in-flight/queued Vulkan inference and release the native model —
+            // otherwise leaving the reader lets background upscaling keep running to completion
+            // on its own, and the native model is never released (see final-review finding:
+            // ImageEnhancer.cancelAll had zero production call sites).
+            ImageEnhancer.cancelAll("reader closed")
+        }
         viewModel.state.value.viewer?.destroy()
         config = null
         menuToggleToast?.cancel()

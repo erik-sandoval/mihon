@@ -119,21 +119,26 @@ private fun ColumnScope.PanelByPanelViewerSettings(
         onSelectInvertMode = viewModel.preferences.pagerNavInverted::set,
     )
 
+    CheckboxItem(
+        label = stringResource(MR.strings.pref_panel_by_panel_swipe_inverted),
+        pref = viewModel.preferences.panelByPanelSwipeInverted,
+    )
+
     // No scale-type selector here — Guided view always fits the whole page/panel on screen
     // (forced in PagerConfig, independent of the pref_image_scale_type_key preference).
 
     val manga by viewModel.mangaFlow.collectAsState()
-    val globalRightToLeft by viewModel.preferences.panelByPanelRightToLeft.collectAsState()
+    val globalLeftToRight by viewModel.preferences.panelByPanelLeftToRight.collectAsState()
     val override = remember(manga) { PanelByPanelDirection.fromPreference(manga?.panelByPanelDirection?.toInt()) }
     // The series may have no override yet (a fresh series falls back to the app-wide default), but
     // the picker only offers the two concrete choices — selecting one always pins this series
     // explicitly, same as every other per-series setting on this page.
     val effectiveDirection = when (override) {
-        PanelByPanelDirection.DEFAULT -> if (globalRightToLeft) PanelByPanelDirection.RIGHT_TO_LEFT else PanelByPanelDirection.LEFT_TO_RIGHT
+        PanelByPanelDirection.DEFAULT -> if (globalLeftToRight) PanelByPanelDirection.LEFT_TO_RIGHT else PanelByPanelDirection.RIGHT_TO_LEFT
         else -> override
     }
-    SettingsChipRow(MR.strings.pref_panel_by_panel_right_to_left) {
-        listOf(PanelByPanelDirection.LEFT_TO_RIGHT, PanelByPanelDirection.RIGHT_TO_LEFT).map {
+    SettingsChipRow(MR.strings.panel_by_panel_direction) {
+        listOf(PanelByPanelDirection.RIGHT_TO_LEFT, PanelByPanelDirection.LEFT_TO_RIGHT).map {
             FilterChip(
                 selected = it == effectiveDirection,
                 onClick = { viewModel.onChangePanelByPanelDirection(it) },

@@ -1,9 +1,11 @@
 package eu.kanade.domain.manga.interactor
 
 import dev.zacsweers.metro.Inject
+import eu.kanade.tachiyomi.ui.reader.setting.MangaUpscaleSettings
 import eu.kanade.tachiyomi.ui.reader.setting.PanelByPanelDirection
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderOrientation
 import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
+import eu.kanade.tachiyomi.ui.reader.setting.UpscaleEnabledOverride
 import tachiyomi.domain.manga.model.MangaUpdate
 import tachiyomi.domain.manga.repository.MangaRepository
 
@@ -38,6 +40,26 @@ class SetMangaViewerFlags(
             MangaUpdate(
                 id = id,
                 viewerFlags = manga.viewerFlags.setFlag(flag, PanelByPanelDirection.MASK.toLong()),
+            ),
+        )
+    }
+
+    suspend fun awaitSetUpscaleOverride(id: Long, settings: MangaUpscaleSettings?) {
+        val manga = mangaRepository.getMangaById(id)
+        mangaRepository.update(
+            MangaUpdate(
+                id = id,
+                viewerFlags = manga.viewerFlags.setFlag(MangaUpscaleSettings.toFlags(settings), MangaUpscaleSettings.MASK),
+            ),
+        )
+    }
+
+    suspend fun awaitSetUpscaleEnabledOverride(id: Long, override: UpscaleEnabledOverride) {
+        val manga = mangaRepository.getMangaById(id)
+        mangaRepository.update(
+            MangaUpdate(
+                id = id,
+                viewerFlags = manga.viewerFlags.setFlag(override.flagValue, UpscaleEnabledOverride.MASK),
             ),
         )
     }

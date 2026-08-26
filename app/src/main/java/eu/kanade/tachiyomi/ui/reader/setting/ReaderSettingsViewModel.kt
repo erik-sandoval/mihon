@@ -14,6 +14,8 @@ class ReaderSettingsViewModel(
     val onChangeReadingMode: (ReadingMode) -> Unit,
     val onChangeOrientation: (ReaderOrientation) -> Unit,
     val onChangePanelByPanelDirection: (PanelByPanelDirection) -> Unit,
+    val onChangeUpscaleOverride: (MangaUpscaleSettings?) -> Unit,
+    val onChangeUpscaleEnabledOverride: (UpscaleEnabledOverride) -> Unit,
     val preferences: ReaderPreferences,
 ) : ViewModel() {
 

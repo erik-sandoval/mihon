@@ -64,6 +64,7 @@ object SettingsReaderScreen : SearchableSettings {
             getReadingGroup(readerPreferences = readerPref),
             getPagedGroup(readerPreferences = readerPref),
             getWebtoonGroup(readerPreferences = readerPref),
+            getGuidedViewGroup(readerPreferences = readerPref),
             getNavigationGroup(readerPreferences = readerPref),
             getActionsGroup(readerPreferences = readerPref),
         )
@@ -374,6 +375,25 @@ object SettingsReaderScreen : SearchableSettings {
                 Preference.PreferenceItem.SwitchPreference(
                     preference = readerPreferences.webtoonDisableZoomOut,
                     title = stringResource(MR.strings.pref_webtoon_disable_zoom_out),
+                ),
+            ),
+        )
+    }
+
+    @Composable
+    private fun getGuidedViewGroup(readerPreferences: ReaderPreferences): Preference.PreferenceGroup {
+        return Preference.PreferenceGroup(
+            title = stringResource(MR.strings.panel_by_panel_viewer),
+            preferenceItems = listOf(
+                Preference.PreferenceItem.SwitchPreference(
+                    preference = readerPreferences.panelByPanelLeftToRight,
+                    title = stringResource(MR.strings.pref_panel_by_panel_right_to_left),
+                    subtitle = stringResource(MR.strings.pref_panel_by_panel_right_to_left_summary),
+                ),
+                Preference.PreferenceItem.SwitchPreference(
+                    preference = readerPreferences.panelByPanelSwipeInverted,
+                    title = stringResource(MR.strings.pref_panel_by_panel_swipe_inverted),
+                    subtitle = stringResource(MR.strings.pref_panel_by_panel_swipe_inverted_summary),
                 ),
             ),
         )

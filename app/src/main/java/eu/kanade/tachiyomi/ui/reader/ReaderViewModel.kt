@@ -45,10 +45,12 @@ import eu.kanade.tachiyomi.ui.reader.model.InsertPage
 import eu.kanade.tachiyomi.ui.reader.model.ReaderChapter
 import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
+import eu.kanade.tachiyomi.ui.reader.setting.MangaUpscaleSettings
 import eu.kanade.tachiyomi.ui.reader.setting.PanelByPanelDirection
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderOrientation
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
+import eu.kanade.tachiyomi.ui.reader.setting.UpscaleEnabledOverride
 import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
 import eu.kanade.tachiyomi.util.chapter.filterDownloaded
 import eu.kanade.tachiyomi.util.chapter.removeDuplicates
@@ -813,7 +815,7 @@ class ReaderViewModel(
 
     /**
      * Updates the panel-by-panel reading direction override for the open manga. [PanelByPanelDirection.DEFAULT]
-     * clears the override, falling back to [ReaderPreferences.panelByPanelRightToLeft].
+     * clears the override, falling back to [ReaderPreferences.panelByPanelLeftToRight].
      */
     fun setMangaPanelByPanelDirection(direction: PanelByPanelDirection) {
         val manga = manga ?: return
@@ -821,6 +823,66 @@ class ReaderViewModel(
             setMangaViewerFlags.awaitSetPanelByPanelDirection(manga.id, direction.flagValue.toLong())
             // Any state.manga change makes ReaderActivity tear down and recreate the viewer (see
             // its state.map { it.manga }.distinctUntilChanged().onEach { updateViewer() }
+            // subscription), so the reload below isn't optional — without it the freshly recreated
+            // viewer is left with no chapters/pages in it at all.
+            val currChapters = state.value.viewerChapters
+            if (currChapters != null) {
+                val currChapter = currChapters.currChapter
+                currChapter.requestedPage = currChapter.chapter.last_page_read
+
+                mutableState.update {
+                    it.copy(
+                        manga = getManga.await(manga.id),
+                        viewerChapters = currChapters,
+                    )
+                }
+                eventChannel.send(Event.ReloadViewerChapters)
+            }
+        }
+    }
+
+    /**
+     * Updates the per-series AI upscale override for the open manga. `null` clears the override,
+     * falling back to the app-wide [ReaderPreferences] upscale settings.
+     */
+    fun setMangaUpscaleOverride(settings: MangaUpscaleSettings?) {
+        val manga = manga ?: return
+        viewModelScope.launchIO {
+            setMangaViewerFlags.awaitSetUpscaleOverride(manga.id, settings)
+            // Same viewerFlags column as setMangaPanelByPanelDirection above — any change to it
+            // changes state.manga, which makes ReaderActivity tear down and recreate the viewer
+            // (see its state.map { it.manga }.distinctUntilChanged().onEach { updateViewer() }
+            // subscription), so the reload below isn't optional — without it the freshly recreated
+            // viewer is left with no chapters/pages in it at all.
+            val currChapters = state.value.viewerChapters
+            if (currChapters != null) {
+                val currChapter = currChapters.currChapter
+                currChapter.requestedPage = currChapter.chapter.last_page_read
+
+                mutableState.update {
+                    it.copy(
+                        manga = getManga.await(manga.id),
+                        viewerChapters = currChapters,
+                    )
+                }
+                eventChannel.send(Event.ReloadViewerChapters)
+            }
+        }
+    }
+
+    /**
+     * Updates whether AI upscaling is on for the open manga. Deliberately separate from
+     * [setMangaUpscaleOverride] — see [UpscaleEnabledOverride]'s doc comment for why bundling this
+     * into that override caused turning upscaling off to also tick, and turning "Custom settings
+     * for this series" off to also silently re-enable, upscaling.
+     */
+    fun setMangaUpscaleEnabledOverride(override: UpscaleEnabledOverride) {
+        val manga = manga ?: return
+        viewModelScope.launchIO {
+            setMangaViewerFlags.awaitSetUpscaleEnabledOverride(manga.id, override)
+            // Same viewerFlags column as setMangaPanelByPanelDirection above — any change to it
+            // changes state.manga, which makes ReaderActivity tear down and recreate the viewer
+            // (see its state.map { it.manga }.distinctUntilChanged().onEach { updateViewer() }
             // subscription), so the reload below isn't optional — without it the freshly recreated
             // viewer is left with no chapters/pages in it at all.
             val currChapters = state.value.viewerChapters

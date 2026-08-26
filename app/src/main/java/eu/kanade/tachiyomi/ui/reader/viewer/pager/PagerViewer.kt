@@ -18,6 +18,7 @@ import eu.kanade.tachiyomi.ui.reader.model.ReaderPage
 import eu.kanade.tachiyomi.ui.reader.model.ViewerChapters
 import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
 import eu.kanade.tachiyomi.ui.reader.viewer.ViewerNavigation.NavigationRegion
+import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelDirection
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import mihon.app.di.appGraph
@@ -143,12 +144,20 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
                 )
         }
         // moveLeft()/moveRight() already step a panel stop when one's available in that direction
-        // and fall back to turning the page when it isn't. Unlike the LEFT/RIGHT tap zones, the
-        // swipe gesture itself stays a fixed physical convention (swipe left = forward) regardless
-        // of the RTL/LTR setting — panel order already accounts for reading direction upstream (see
-        // PanelOrdering), so the swipe input only needs to mean "next stop" vs "previous stop".
+        // and fall back to turning the page when it isn't. By design, the base swipe convention
+        // mirrors the active reading direction — RTL: swipe right advances, swipe left goes back;
+        // LTR: swipe left advances, swipe right goes back. panelByPanelSwipeInverted is a separate,
+        // explicit user toggle that flips that base convention; both the reading direction and the
+        // toggle are read live here (not baked in at setup time) since either can change while the
+        // viewer is alive. Only PanelByPanelViewer ever has a panelDirection to consult — the cast
+        // below reads as RTL (forwardIsLeftward = false) for any other viewer, but that's moot:
+        // panelSwipeInterceptGate above only ever claims the gesture when the current holder has
+        // panel stops, which is exclusive to that subclass.
         pager.panelSwipeListener = { leftward ->
-            if (leftward) moveRight() else moveLeft()
+            val forwardIsLeftward = (this as? PanelByPanelViewer)?.panelDirection == PanelDirection.LTR
+            val invert = readerPreferences.panelByPanelSwipeInverted.get()
+            val forward = if (forwardIsLeftward != invert) leftward else !leftward
+            if (forward) moveRight() else moveLeft()
         }
 
         config.dualPageSplitChangedListener = { enabled ->

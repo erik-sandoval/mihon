@@ -9,7 +9,11 @@ class ImageEnhancerPriorityTest {
 
     @BeforeEach
     fun resetQueueState() {
-        ImageEnhancer.reset(initialPageIndex = 5)
+        // cancelAll() first clears ImageEnhancer's own lastResetChapterId tracking (an object-scoped
+        // singleton, so it persists across tests otherwise) — without it, reset() below would skip
+        // as a no-op on every test after the first, since they all pass the same chapterId.
+        ImageEnhancer.cancelAll("test reset")
+        ImageEnhancer.reset(chapterId = 1L, initialPageIndex = 5)
     }
 
     private fun request(pageIndex: Int, priority: Int, seq: Int) = ImageEnhancer.EnhanceRequest(

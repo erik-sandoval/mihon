@@ -63,13 +63,15 @@ class ReaderPreferences(
     )
 
     /**
-     * App-wide default for panel-by-panel navigation order, used when a series has no
-     * [PanelByPanelDirection] override of its own (see [eu.kanade.domain.manga.model.panelByPanelDirection]).
-     * Defaults to right-to-left to match typical manga.
+     * Inverts the fixed right-to-left default for panel-by-panel navigation order, used when a
+     * series has no [PanelByPanelDirection] override of its own (see
+     * [eu.kanade.domain.manga.model.panelByPanelDirection]). Right-to-left (false) is the fixed
+     * default to match typical manga; this only needs to be set when left-to-right is wanted
+     * instead.
      */
-    val panelByPanelRightToLeft: Preference<Boolean> = preferenceStore.getBoolean(
-        "pref_panel_by_panel_right_to_left",
-        true,
+    val panelByPanelLeftToRight: Preference<Boolean> = preferenceStore.getBoolean(
+        "pref_panel_by_panel_left_to_right",
+        false,
     )
 
     /** Whether a chapter's first page starts with a full-page reveal before stepping into its first panel. */
@@ -93,6 +95,17 @@ class ReaderPreferences(
     /** Debug aid: outlines every detected panel with its reading-order number. */
     val panelByPanelShowDebugOrder: Preference<Boolean> = preferenceStore.getBoolean(
         "pref_panel_by_panel_show_debug_order",
+        false,
+    )
+
+    /**
+     * Inverts the fixed swipe-right-is-forward convention (see [PagerViewer][eu.kanade.tachiyomi.ui.reader.viewer.pager.PagerViewer]'s
+     * `panelSwipeListener`) so swipe-left steps forward instead. Independent of
+     * [panelByPanelLeftToRight]/[PanelByPanelDirection] — this flips the physical gesture itself,
+     * not the reading-order direction those control.
+     */
+    val panelByPanelSwipeInverted: Preference<Boolean> = preferenceStore.getBoolean(
+        "pref_panel_by_panel_swipe_inverted",
         false,
     )
 

@@ -70,6 +70,15 @@ object ImageEnhancer {
     @Volatile
     private var nativeResetJob: Job? = null
 
+    // Tracks which chapter the queue was last reset for, so a redundant reset() call for the
+    // *same* chapter (e.g. ReaderActivity's viewerChapters collector re-firing once after the
+    // Activity is recreated on rotation, since distinctUntilChanged's "previous value" memory is
+    // scoped to that collection and doesn't survive recreation) doesn't abort in-flight/queued
+    // work that was never actually stale. Cleared in cancelAll() so a genuine close-then-reopen of
+    // the same chapter still resets normally.
+    @Volatile
+    private var lastResetChapterId: Long = -1L
+
     // Current page the user is viewing. Used to prioritize requests closest to this page.
     @Volatile
     var targetPageIndex: Int = 0
@@ -257,8 +266,13 @@ object ImageEnhancer {
         logcat(LogPriority.DEBUG) { "ImageEnhancer: Enqueued page $pageIndex/$pageVariant (priority=$priorityLevel)" }
     }
 
-    fun reset(initialPageIndex: Int = 0) {
+    fun reset(chapterId: Long, initialPageIndex: Int = 0) {
+        if (chapterId == lastResetChapterId) {
+            logcat(LogPriority.DEBUG) { "ImageEnhancer: Skipping redundant reset for chapter $chapterId (already current)" }
+            return
+        }
         cancelAll(reason = "reset")
+        lastResetChapterId = chapterId
         queue.clear()
         pendingRequests.clear()
         targetPageIndex = initialPageIndex
@@ -269,7 +283,7 @@ object ImageEnhancer {
         lastResetTime = System.currentTimeMillis()
         isFirstRequestAfterReset = true
         initialTargetEnqueued = false
-        logcat(LogPriority.DEBUG) { "ImageEnhancer: Resetting state to page $initialPageIndex" }
+        logcat(LogPriority.DEBUG) { "ImageEnhancer: Resetting state to page $initialPageIndex for chapter $chapterId" }
     }
 
     fun cancelAll(reason: String = "cancelAll", resetNative: Boolean = true) {
@@ -285,6 +299,7 @@ object ImageEnhancer {
         activePageIndex = -1
         activePageVariant = ""
         initialTargetEnqueued = false
+        lastResetChapterId = -1L
         if (resetNative) {
             try {
                 Waifu2x.abortProcessing()

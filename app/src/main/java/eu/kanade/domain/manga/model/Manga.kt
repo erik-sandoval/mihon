@@ -3,9 +3,11 @@ package eu.kanade.domain.manga.model
 import android.content.Context
 import eu.kanade.tachiyomi.data.cache.CoverCache
 import eu.kanade.tachiyomi.source.model.SManga
+import eu.kanade.tachiyomi.ui.reader.setting.MangaUpscaleSettings
 import eu.kanade.tachiyomi.ui.reader.setting.PanelByPanelDirection
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderOrientation
 import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
+import eu.kanade.tachiyomi.ui.reader.setting.UpscaleEnabledOverride
 import mihon.app.di.appGraph
 import tachiyomi.core.common.preference.TriState
 import tachiyomi.core.metadata.comicinfo.ComicInfo
@@ -24,6 +26,12 @@ val Manga.readerOrientation: Long
 
 val Manga.panelByPanelDirection: Long
     get() = viewerFlags and PanelByPanelDirection.MASK.toLong()
+
+val Manga.upscaleOverride: MangaUpscaleSettings?
+    get() = MangaUpscaleSettings.fromFlags(viewerFlags)
+
+val Manga.upscaleEnabledOverride: UpscaleEnabledOverride
+    get() = UpscaleEnabledOverride.fromFlags(viewerFlags)
 
 val Manga.downloadedFilter: TriState
     get() {
