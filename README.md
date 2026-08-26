@@ -1,6 +1,6 @@
 ## What's Different From Mihon
 
-This is a personal fork of Mihon with a few reader-focused additions on top of the upstream app:
+This is a personal fork of Mihon with a few reader-focused additions on top of the original app:
 
 <div align="left">
 
