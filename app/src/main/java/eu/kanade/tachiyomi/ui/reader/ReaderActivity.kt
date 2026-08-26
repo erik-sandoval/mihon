@@ -91,6 +91,7 @@ import eu.kanade.tachiyomi.util.system.readerBackgroundColor
 import eu.kanade.tachiyomi.util.system.toShareIntent
 import eu.kanade.tachiyomi.util.system.toast
 import eu.kanade.tachiyomi.util.view.setComposeContent
+import eu.kanade.tachiyomi.util.waifu2x.ImageEnhancer
 import eu.kanade.tachiyomi.util.waifu2x.Waifu2x
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
@@ -236,7 +237,17 @@ class ReaderActivity : BaseActivity() {
             .map { it.viewerChapters }
             .distinctUntilChanged()
             .filterNotNull()
-            .onEach(::setChapters)
+            .onEach { viewerChapters ->
+                // distinctUntilChanged on the ViewerChapters reference fires specifically when the
+                // chapters actually change (as opposed to the ReloadViewerChapters event below,
+                // which replays the *same* viewerChapters value to reload the viewer for a
+                // reading-mode/orientation toggle) — cancelRequestsLessThan/GreaterThan only prune
+                // by matching mangaId/chapterId, so a request queued under a previous chapter can
+                // never be pruned by them; reset the whole enhancement queue here instead (see
+                // final-review finding: ImageEnhancer.reset had zero production call sites).
+                ImageEnhancer.reset(viewerChapters.currChapter.requestedPage)
+                setChapters(viewerChapters)
+            }
             .launchIn(lifecycleScope)
 
         // Deprioritize Waifu2x upscale work while the reader's menu/UI chrome is up, and rely on
@@ -501,6 +512,11 @@ class ReaderActivity : BaseActivity() {
         super.onDestroy()
         uiBusyJob?.cancel()
         Waifu2x.setUiBusy(false)
+        // Stop any in-flight/queued Vulkan inference and release the native model — otherwise
+        // leaving the reader lets background upscaling keep running to completion on its own, and
+        // the native model is never released (see final-review finding: ImageEnhancer.cancelAll
+        // had zero production call sites).
+        ImageEnhancer.cancelAll("reader closed")
         viewModel.state.value.viewer?.destroy()
         config = null
         menuToggleToast?.cancel()
