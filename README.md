@@ -4,7 +4,7 @@ This is a personal fork of Mihon with a few reader-focused additions on top of t
 
 <div align="left">
 
-* **AI-powered page upscaling** — enhances low-resolution pages in real time using Real-CUGAN, Real-CUGAN Pro, Real-ESRGAN, waifu2x, Anime4K, AnimeJaNai, and community super-resolution models (NomosUni-SPAN, sudo-UltraCompact), running on [ncnn](https://github.com/Tencent/ncnn). Supports Vulkan, CPU, and Qualcomm NPU (QNN) processing backends, per-series overrides (model/noise/scale/style, independent of whether upscaling is enabled at all for that series), and a local disk cache so a page is only enhanced once.
+* **AI-powered image upscaling** — enhances low-resolution images in real time using Real-CUGAN, Real-CUGAN Pro, Real-ESRGAN, waifu2x, Anime4K, AnimeJaNai, and community super-resolution models (NomosUni-SPAN, sudo-UltraCompact), running on [ncnn](https://github.com/Tencent/ncnn). Supports Vulkan, CPU, and Qualcomm NPU (QNN) processing backends, per-series overrides (model/noise/scale/style, independent of whether upscaling is enabled at all for that series), and a local disk cache so a page is only enhanced once.
 
 * **Guided View** — an ML-assisted panel-by-panel reading mode that automatically detects panel boundaries and reading order on each page, with a manual panel editor for correcting individual pages, per-series/app-wide reading direction and swipe-direction controls, and optional full-page intro/outro stops per chapter.
 
