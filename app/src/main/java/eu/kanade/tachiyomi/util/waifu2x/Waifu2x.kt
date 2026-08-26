@@ -35,16 +35,31 @@ object Waifu2x {
     @Volatile private var isAnime4kInitialized = false
     @Volatile private var isW2xExInitialized = false
 
+    /**
+     * True only when `System.loadLibrary("waifu2x-jni")` actually succeeded. The native library is
+     * built for arm64-v8a only (see app/build.gradle.kts) — on armeabi-v7a/x86/x86_64 the `init`
+     * block below catches the load failure, but every `external fun` declared in this file would
+     * otherwise still throw `UnsatisfiedLinkError` on first call. That's an `Error`, not an
+     * `Exception`, so it isn't caught by callers' `catch (e: Exception)` blocks (ImageEnhancer's
+     * worker loop, ReaderPageImageView's polling loop) and crashes the app. Every public function
+     * below that reaches an `external fun` must check this flag first and no-op/return a safe
+     * default instead of calling through.
+     */
+    @Volatile private var nativeAvailable = false
+
     init {
-        try {
+        nativeAvailable = try {
             System.loadLibrary("waifu2x-jni")
+            true
         } catch (e: UnsatisfiedLinkError) {
             // Native library not available
+            false
         }
     }
 
     fun init(context: Context, noiseLevel: Int = 2, scale: Int = 2): Boolean {
         if (isInitialized) return true
+        if (!nativeAvailable) return false
 
         return synchronized(this) {
             if (isInitialized) return true
@@ -75,7 +90,7 @@ object Waifu2x {
      * @return Upscaled bitmap, or null if processing failed
      */
     fun process(input: Bitmap, id: Int = -1): Bitmap? {
-        if (!isInitialized) return null
+        if (!isInitialized || !nativeAvailable) return null
 
         // Ensure input is in ARGB_8888 format
         val argbBitmap = if (input.config != Bitmap.Config.ARGB_8888) {
@@ -109,6 +124,7 @@ object Waifu2x {
         fp16Arithmetic: Boolean = false,
         processingBackend: Int = PROCESSING_BACKEND_VULKAN,
     ): Boolean {
+        if (!nativeAvailable) return false
         val effectiveNoiseLevel = if (isPro && noiseLevel !in setOf(0, 3, 4)) 3 else noiseLevel
         val model = if (isPro) 1 else 0
         val resolvedBackend = resolveProcessingBackend(processingBackend, model, scale)
@@ -217,6 +233,7 @@ object Waifu2x {
         fp16Arithmetic: Boolean = false,
         processingBackend: Int = PROCESSING_BACKEND_VULKAN,
     ): Boolean = synchronized(this) {
+        if (!nativeAvailable) return false
         val isPhotoStyle = style == REAL_ESRGAN_STYLE_PHOTO
         val outputScale = if (isPhotoStyle) 2 else scale
         val resolvedBackend = resolveProcessingBackend(processingBackend, MODEL_REAL_ESRGAN_ANIME, outputScale)
@@ -293,6 +310,7 @@ object Waifu2x {
     private var lastNoseConfig: GenericModelConfig? = null
 
     fun initNose(context: Context, tileSleepMs: Int = 0, tileSize: Int = 128, precision: Int = 0, fp16Arithmetic: Boolean = false): Boolean = synchronized(this) {
+        if (!nativeAvailable) return false
         val config = GenericModelConfig(precision.coerceIn(0, 3), fp16Arithmetic)
         if (lastNoseConfig != config) {
             isNoseInitialized = false
@@ -330,6 +348,7 @@ object Waifu2x {
     private var lastWaifu2xConfig: Waifu2xConfig? = null
 
     fun initWaifu2x(context: Context, noise: Int, scale: Int, tileSleepMs: Int = 0, tileSize: Int = 128, precision: Int = 0, fp16Arithmetic: Boolean = false): Boolean = synchronized(this) {
+        if (!nativeAvailable) return false
         val newConfig = Waifu2xConfig(noise, scale, precision.coerceIn(0, 3), fp16Arithmetic)
 
         // Force reinit if config changed
@@ -365,6 +384,7 @@ object Waifu2x {
     }
 
     fun initWaifu2xUpconv7(context: Context, noise: Int, scale: Int, tileSleepMs: Int = 0, tileSize: Int = 128, precision: Int = 0, fp16Arithmetic: Boolean = false): Boolean = synchronized(this) {
+        if (!nativeAvailable) return false
         val newConfig = Waifu2xConfig(noise, scale, precision.coerceIn(0, 3), fp16Arithmetic)
 
         // Force reinit if config changed
@@ -451,6 +471,7 @@ object Waifu2x {
         fp16Arithmetic: Boolean = false,
         processingBackend: Int = PROCESSING_BACKEND_VULKAN,
     ): Boolean = synchronized(this) {
+        if (!nativeAvailable) return false
         val selectedModel = w2xExModelFor(model) ?: return false
         val effectiveScale = selectedModel.scale
         val modelDir = extractModelsToCache(context, selectedModel.assetPath) ?: return false
@@ -534,7 +555,7 @@ object Waifu2x {
     @Volatile var processingId: Int = -1
 
     private fun processBitmapHelper(input: Bitmap, id: Int): Bitmap? {
-        if (input.isRecycled) return null
+        if (!nativeAvailable || input.isRecycled) return null
 
         val argbBitmap = if (input.config != Bitmap.Config.ARGB_8888) {
             try {
@@ -562,13 +583,13 @@ object Waifu2x {
      * Get the raw packed progress value from native code.
      * Format: [ID (upper 32 bits)] [Progress (lower 32 bits)]
      */
-    fun getProgress(): Long = nativeGetProgress()
+    fun getProgress(): Long = if (nativeAvailable) nativeGetProgress() else 0L
 
     /**
      * Get only the progress percentage (0-100) from the packed value.
      */
     fun getProgressPercent(): Int {
-        val packed = nativeGetProgress()
+        val packed = getProgress()
         return (packed and 0xFFFFFFFF).toInt()
     }
 
@@ -576,7 +597,7 @@ object Waifu2x {
      * Get only the processing ID from the packed value.
      */
     fun getProgressId(): Int {
-        val packed = nativeGetProgress()
+        val packed = getProgress()
         return (packed shr 32).toInt()
     }
 
@@ -596,17 +617,21 @@ object Waifu2x {
         lastNoseConfig = null
         lastWaifu2xConfig = null
         lastW2xExConfig = null
-        nativeDestroy()
+        if (nativeAvailable) {
+            nativeDestroy()
+        }
     }
 
     /**
      * Ask any active native upscaling operation to stop at its next cancellation check.
      */
     fun abortProcessing() {
+        if (!nativeAvailable) return
         nativeAbortProcessing()
     }
 
     fun prepareProcessing() {
+        if (!nativeAvailable) return
         nativeClearAbortProcessing()
     }
 
@@ -622,7 +647,7 @@ object Waifu2x {
      * Release native resources.
      */
     fun destroy() {
-        if (isInitialized || isRealCuganInitialized || isRealEsrganInitialized || isNoseInitialized || isWaifu2xInitialized || isAnime4kInitialized || isW2xExInitialized) {
+        if (nativeAvailable && (isInitialized || isRealCuganInitialized || isRealEsrganInitialized || isNoseInitialized || isWaifu2xInitialized || isAnime4kInitialized || isW2xExInitialized)) {
             nativeDestroy()
             isInitialized = false
             isRealCuganInitialized = false
@@ -639,6 +664,7 @@ object Waifu2x {
      */
     fun initAnime4K(context: Context, mode: Int): Boolean {
         if (isAnime4kInitialized) return true
+        if (!nativeAvailable) return false
 
         val assetManager = context.assets
         val shaders = mutableListOf<String>()
@@ -681,7 +707,7 @@ object Waifu2x {
      * Process bitmap with Anime4K.
      */
     fun processAnime4K(input: Bitmap): Bitmap? {
-        if (!isAnime4kInitialized || input.isRecycled) return null
+        if (!nativeAvailable || !isAnime4kInitialized || input.isRecycled) return null
 
         val argbBitmap = try {
             if (input.config != Bitmap.Config.ARGB_8888) {
@@ -886,10 +912,11 @@ object Waifu2x {
     }
 
     fun setUiBusy(busy: Boolean) {
+        if (!nativeAvailable) return
         nativeSetUiBusy(busy)
     }
 
-    fun isQnnRuntimeAvailable(): Boolean = try {
+    fun isQnnRuntimeAvailable(): Boolean = nativeAvailable && try {
         nativeIsQnnRuntimeAvailable()
     } catch (_: UnsatisfiedLinkError) {
         false
@@ -949,7 +976,7 @@ object Waifu2x {
         return if (backend == PROCESSING_BACKEND_QUALCOMM_NPU) "Qualcomm NPU" else "Vulkan"
     }
 
-    fun isQnnActive(): Boolean = try {
+    fun isQnnActive(): Boolean = nativeAvailable && try {
         nativeIsQnnInitialized()
     } catch (_: UnsatisfiedLinkError) {
         false
@@ -984,7 +1011,7 @@ object Waifu2x {
     }
 
     fun scaleBitmapNative(input: Bitmap, targetWidth: Int, targetHeight: Int): Bitmap? {
-        if (input.isRecycled) return null
+        if (!nativeAvailable || input.isRecycled) return null
         if (input.width == targetWidth && input.height == targetHeight) return input
 
         val argbBitmap = if (input.config != Bitmap.Config.ARGB_8888) {
@@ -1035,7 +1062,7 @@ object Waifu2x {
     private external fun nativeUpdatePerformanceConfig(tileSleepMs: Int, tileSize: Int)
 
     fun updatePerformance(tileSleepMs: Int, tileSize: Int) {
-        if (isRealCuganInitialized || isRealEsrganInitialized || isNoseInitialized || isWaifu2xInitialized || isW2xExInitialized) {
+        if (nativeAvailable && (isRealCuganInitialized || isRealEsrganInitialized || isNoseInitialized || isWaifu2xInitialized || isW2xExInitialized)) {
             nativeUpdatePerformanceConfig(tileSleepMs, tileSize)
         }
     }
