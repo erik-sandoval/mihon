@@ -1,3 +1,26 @@
+## What's Different From Mihon
+
+This is a personal fork of Mihon with a few reader-focused additions on top of the upstream app:
+
+<div align="left">
+
+* **AI-powered page upscaling** — enhances low-resolution pages in real time using Real-CUGAN, Real-CUGAN Pro, Real-ESRGAN, waifu2x, Anime4K, AnimeJaNai, and community super-resolution models (NomosUni-SPAN, sudo-UltraCompact), running on [ncnn](https://github.com/Tencent/ncnn). Supports Vulkan, CPU, and Qualcomm NPU (QNN) processing backends, per-series overrides (model/noise/scale/style, independent of whether upscaling is enabled at all for that series), and a local disk cache so a page is only enhanced once.
+
+* **Guided View** — an ML-assisted panel-by-panel reading mode that automatically detects panel boundaries and reading order on each page, with a manual panel editor for correcting individual pages, per-series/app-wide reading direction and swipe-direction controls, and optional full-page intro/outro stops per chapter.
+
+</div>
+
+## Fork Acknowledgements
+
+<div align="left">
+
+* The AI upscaling integration is based on [HaoweiLi97/mihon_img_upscale](https://github.com/HaoweiLi97/mihon_img_upscale), which itself credits [Bilibili AI Lab](https://github.com/bilibili/ailab) (Real-CUGAN), [Xintao Wang et al.](https://github.com/xinntao/Real-ESRGAN) (Real-ESRGAN), and [nagadomi](https://github.com/nagadomi/waifu2x) (waifu2x).
+* Guided View's panel detection model is [leoxs22/manga-panel-detector-yolo26n](https://huggingface.co/leoxs22/manga-panel-detector-yolo26n), a YOLO26-nano model trained on the [Manga109-s](http://www.manga109.org/) dataset, © the Manga109 project (Aizawa et al., University of Tokyo) — see [Building a Manga Dataset "Manga109" with Annotations for Multimedia Applications](https://doi.org/10.1109/mmul.2020.2987895) (2020) and [Sketch-based Manga Retrieval using Manga109 Dataset](https://doi.org/10.1007/s11042-016-4020-z) (2017).
+
+</div>
+
+<br><br>
+
 <div align="center">
 
 <a href="https://mihon.app">
