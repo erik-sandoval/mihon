@@ -23,3 +23,9 @@
 *.pyc binary
 *.swp binary
 *.tflite binary
+
+# Vendored native SDK / AI upscaler model weights
+*.a binary
+*.so binary
+*.bin binary
+*.param binary
