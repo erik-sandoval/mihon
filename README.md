@@ -21,7 +21,7 @@ This is a personal fork of Mihon with a few reader-focused additions on top of t
 
 > **Performance note:** all testing for the AI upscaling and Guided View features has been done on a Samsung Galaxy S24 Ultra. Performance on lower-powered devices is untested and unknown.
 
-<br><br>
+<br>
 
 <div align="center">
 
