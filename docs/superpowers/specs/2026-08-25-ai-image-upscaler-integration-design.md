@@ -23,6 +23,24 @@ state.
 - The full background enhancement pipeline (priority queue, disk cache,
   Coil decoder hook) and its settings UI.
 
+**Correction (post-final-review, not full parity):** 4 of the 13 models —
+W2xEX "Universal Fast" (model ID 6), W2xEX "Omni Mini V2" (model ID 8),
+W2xEX "Photo Small" (`Waifu2x.MODEL_W2XEX_PHOTO_SMALL`), and AnimeJaNai v2
+UltraCompact (model ID 16) — have no bundled `.bin`/`.param` weights under
+`app/src/main/assets/` (only an `ATTRIBUTION.txt` for AnimeJaNai, nothing at
+all for the three W2xEX ones). Selecting any of them would fall through to
+`Waifu2x.kt`'s `downloadDirectModels` runtime-download path, which fetches
+native model weights from mutable, unpinned URLs (HuggingFace `resolve/main`,
+GitHub `raw`/`main`) with no checksum, no signature verification, and no user
+consent, then hands the result straight to ncnn's native model parser — a
+real integrity concern, not just a completeness gap. These 4 models are
+excluded from `ColorFilterPage.kt`'s model picker so this download path can
+never be triggered from the UI; the dispatch/download code itself is left in
+place (inert), matching this port's pattern of leaving unused fork code
+rather than surgically removing it. The remaining 9 models are all bundled
+and reachable. "Full parity" below refers only to the asset-copy step for the
+models that *are* bundled, not to all 13 being user-selectable.
+
 **Explicitly deferred:**
 - The Qualcomm QNN/NPU backend (`qnn_backend.cpp`, the QNN SDK dependency,
   per-model offline-context files). The source fork's own `CMakeLists.txt`

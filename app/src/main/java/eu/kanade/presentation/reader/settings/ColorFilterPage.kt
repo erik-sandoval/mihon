@@ -174,6 +174,15 @@ internal fun ColumnScope.ColorFilterPage(viewModel: ReaderSettingsViewModel) {
         }
 
         SettingsChipRow(MR.strings.reader_model) {
+            // Model IDs 6 (W2xEX Universal Fast), 8 (W2xEX Omni Mini V2),
+            // Waifu2x.MODEL_W2XEX_PHOTO_SMALL (W2xEX Photo Small), and 16 (AnimeJaNai v2
+            // UltraCompact) are intentionally excluded here: none of them ship bundled model
+            // weights under app/src/main/assets/ (see Waifu2x.kt's w2xExModelFor/directSourceFor),
+            // so selecting them would fall through to downloadDirectModels() — a runtime download
+            // of unverified, unpinned native .bin/.param weights straight into ncnn's native model
+            // parser, with no checksum/signature verification and no user consent. That
+            // download-path code is left in place (matches this port's pattern of leaving inert
+            // fork code rather than surgically removing it), just made unreachable from the UI.
             val models = listOf(
                 0 to "Real-CUGAN SE",
                 1 to "Real-CUGAN Pro",
@@ -181,10 +190,6 @@ internal fun ColumnScope.ColorFilterPage(viewModel: ReaderSettingsViewModel) {
                 3 to "Real-CUGAN Nose",
                 4 to "Waifu2x",
                 5 to "Waifu2x (Fast)",
-                6 to "W2xEX Universal Fast",
-                8 to "W2xEX Omni Mini V2",
-                Waifu2x.MODEL_W2XEX_PHOTO_SMALL to "W2xEX Photo Small",
-                16 to "AnimeJaNai v2 UltraCompact",
                 18 to "sudo UltraCompact",
                 Waifu2x.MODEL_SPAN_NOMOSUNI_PHOTO to "SPAN NomosUni Photo",
             )
