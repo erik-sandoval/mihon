@@ -62,6 +62,10 @@ import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.collect
+import kotlinx.coroutines.flow.collectLatest
+import kotlinx.coroutines.flow.debounce
+import kotlinx.coroutines.flow.map
+import kotlinx.coroutines.flow.merge
 import kotlinx.coroutines.isActive
 import logcat.LogPriority
 import mihon.app.di.appGraph
@@ -215,14 +219,16 @@ open class ReaderPageImageView @JvmOverloads constructor(
     }
 
     /**
-     * The one collector in [init] that's genuinely per-view (updates this instance's own status
-     * label) rather than duplicating identical global state. Cancelled explicitly via
+     * The per-view collectors started in [init] (status-label visibility, and re-checking
+     * enhancement for whatever page this view currently holds when a relevant setting changes)
+     * rather than duplicating identical global state. Cancelled explicitly via
      * [cancelPerViewPreferenceCollector] by holders whose [ReaderPageImageView] instance is truly
      * one-shot (see that method's doc) — never by the shared [onDetachedFromWindow] below, since
      * that also runs for pooled/reused holders (webtoon) that must keep collecting across
      * bind/unbind cycles.
      */
     private var perViewPreferenceJob: Job? = null
+    private var enhancementSettingsJob: Job? = null
 
     init {
         // Debounced internally to run at most once every few minutes; cheap and safe to call
@@ -249,21 +255,54 @@ open class ReaderPageImageView @JvmOverloads constructor(
                     }
                 }
         }
+
+        // Without this, refreshEnhancementForCurrentPage() only ever ran from onPageSelected —
+        // so changing e.g. the upscale model while already looking at a page had no visible
+        // effect until the page was turned away from and back to (confirmed report: "I have to
+        // change model/upscale settings and then switch page and back to see result"). React to
+        // any setting that feeds ImageEnhancementCache.getConfigHash, so the currently-displayed
+        // page's cache/enqueue status is re-checked against the new settings immediately.
+        // debounce coalesces both the ~13 flows' simultaneous replay-on-subscribe emissions into
+        // one initial check, and rapid successive changes (e.g. dragging a resolution-limit
+        // field) into one re-check instead of firing on every intermediate value.
+        enhancementSettingsJob = viewScope.launchIO {
+            merge(
+                preferences.realCuganEnabled().changes().map { },
+                preferences.realCuganNoiseLevel().changes().map { },
+                preferences.realCuganScale().changes().map { },
+                preferences.realCuganModel().changes().map { },
+                preferences.realEsrganStyle().changes().map { },
+                preferences.realCuganMaxSizeWidth().changes().map { },
+                preferences.realCuganMaxSizeHeight().changes().map { },
+                preferences.realCuganSkipMaxSizeWidth().changes().map { },
+                preferences.realCuganSkipMaxSizeHeight().changes().map { },
+                preferences.realCuganTileSize().changes().map { },
+                preferences.realCuganPrecision().changes().map { },
+                preferences.realCuganFp16Arithmetic().changes().map { },
+                preferences.realCuganProcessingBackend().changes().map { },
+            )
+                .debounce(400)
+                .collectLatest {
+                    withUIContext { refreshEnhancementForCurrentPage() }
+                }
+        }
     }
 
     /**
-     * Cancels the per-view [realCuganShowStatus] preference collector started in [init]. Safe to
-     * call ONLY from a holder whose [ReaderPageImageView] instance is genuinely one-shot —
-     * created fresh per page and discarded, never reused (e.g. [PagerPageHolder], torn down by
-     * `ViewPagerAdapter.destroyItem` and never handed a different page afterward). Do NOT call
-     * this from a pooled/reused holder's teardown (e.g. `WebtoonPageHolder`'s frame, reused by
-     * RecyclerView across different pages) — its next `bind()` would silently stop reacting to
-     * the show-status preference for the rest of that instance's life, since nothing would ever
-     * restart this collector.
+     * Cancels the per-view [realCuganShowStatus] and enhancement-settings preference collectors
+     * started in [init]. Safe to call ONLY from a holder whose [ReaderPageImageView] instance is
+     * truly one-shot — created fresh per page and discarded, never reused (e.g. [PagerPageHolder],
+     * torn down by `ViewPagerAdapter.destroyItem` and never handed a different page afterward). Do
+     * NOT call this from a pooled/reused holder's teardown (e.g. `WebtoonPageHolder`'s frame,
+     * reused by RecyclerView across different pages) — its next `bind()` would silently stop
+     * reacting to these preferences for the rest of that instance's life, since nothing would ever
+     * restart these collectors.
      */
     protected fun cancelPerViewPreferenceCollector() {
         perViewPreferenceJob?.cancel()
         perViewPreferenceJob = null
+        enhancementSettingsJob?.cancel()
+        enhancementSettingsJob = null
     }
 
     private fun updateStatus(text: String?) {
@@ -1104,6 +1143,79 @@ open class ReaderPageImageView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Checks cache status and (re)triggers enhancement for the page identity currently held by
+     * this view, against whatever the enhancement settings currently are. Called both from
+     * [onPageSelected] (a genuine page selection) and reactively from the settings-change
+     * collector in [init] — without the latter, changing e.g. the upscale model while already
+     * looking at a page had no visible effect until the page was turned away from and back to,
+     * since nothing else re-ran this check for a page that was never re-selected.
+     */
+    private fun refreshEnhancementForCurrentPage() {
+        val mId = readerPage?.chapter?.chapter?.manga_id ?: mangaId
+        val cId = readerPage?.chapter?.chapter?.id ?: chapterId
+        val pIdx = readerPage?.index ?: pageIndex
+        if (pIdx < 0 || mId == -1L || cId == -1L) return
+
+        if (realCuganEnabled) {
+            ImageEnhancementCache.init(context)
+            val configHash = ImageEnhancementCache.getConfigHash(
+                noise = realCuganNoiseLevel,
+                scale = realCuganScale,
+                model = realCuganModel,
+                realEsrganStyle = preferences.realEsrganStyle().get(),
+                maxWidth = realCuganMaxSizeWidth,
+                maxHeight = realCuganMaxSizeHeight,
+                skipMaxWidth = realCuganSkipMaxSizeWidth,
+                skipMaxHeight = realCuganSkipMaxSizeHeight,
+                tileSize = tileSize,
+                precision = preferences.realCuganPrecision().get(),
+                fp16Arithmetic = preferences.realCuganFp16Arithmetic().get(),
+                processingBackend = preferences.realCuganProcessingBackend().get(),
+            )
+            val pageVariant = enhancementVariant()
+
+            val cachedFile = ImageEnhancementCache.getCachedImage(mId, cId, pIdx, configHash, pageVariant)
+            if (cachedFile != null) {
+                logcat(LogPriority.DEBUG) { "ReaderPageImageView: refreshEnhancementForCurrentPage - Page $pIdx found in cache" }
+                val uriString = cachedFile.toURI().toString()
+                if (currentLoadedUri != uriString) {
+                    viewScope.launchIO {
+                        val transformedSource = enhancedImageSourceFactory?.invoke(cachedFile)
+                        if (transformedSource != null) {
+                            withUIContext {
+                                setProcessedSource(cachedFile, transformedSource = transformedSource)
+                            }
+                            return@launchIO
+                        }
+
+                        val bitmap = decodeEnhancedBitmap(cachedFile)
+
+                        if (bitmap != null) {
+                            withUIContext {
+                                setProcessedSource(cachedFile, bitmap = bitmap)
+                            }
+                        } else {
+                            healInvalidEnhancedCache(mId, cId, pIdx, configHash, readerPage, forceCurrentPage = true)
+                            startEnhancementPolling(mId, cId, pIdx, configHash, readerPage)
+                        }
+                    }
+                } else {
+                    updateStatus(context.stringResource(MR.strings.reader_status_processed))
+                }
+            } else if (ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant)) {
+                updateStatus(context.stringResource(MR.strings.reader_status_raw))
+            } else {
+                updateStatus(context.stringResource(MR.strings.reader_status_processing))
+                enqueueEnhancement(mId, cId, pIdx, highPriority = true)
+                startEnhancementPolling(mId, cId, pIdx, configHash)
+            }
+        }
+
+        ImageEnhancer.cancelRequestsLessThan(context.applicationContext, mId, cId, pIdx)
+        ImageEnhancer.cancelRequestsGreaterThan(context.applicationContext, mId, cId, pIdx + preloadSize)
+    }
+
     open fun onPageSelected(forward: Boolean) {
         panelStopsEnterForward = forward
 
@@ -1114,8 +1226,6 @@ open class ReaderPageImageView @JvmOverloads constructor(
         // real current page's in-flight enhancement request out of the window just because a
         // neighbor holder happened to be instantiated first.
         if (isGenuinePageSelection()) {
-            val mId = readerPage?.chapter?.chapter?.manga_id ?: mangaId
-            val cId = readerPage?.chapter?.chapter?.id ?: chapterId
             val pIdx = readerPage?.index ?: pageIndex
 
             if (controlsCurrentPageSelection && pIdx >= 0) {
@@ -1123,65 +1233,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 ImageEnhancer.reprioritizeAround(pIdx, enhancementVariant())
             }
 
-            if (pIdx >= 0 && mId != -1L && cId != -1L) {
-                if (realCuganEnabled) {
-                    ImageEnhancementCache.init(context)
-                    val configHash = ImageEnhancementCache.getConfigHash(
-                        noise = realCuganNoiseLevel,
-                        scale = realCuganScale,
-                        model = realCuganModel,
-                        realEsrganStyle = preferences.realEsrganStyle().get(),
-                        maxWidth = realCuganMaxSizeWidth,
-                        maxHeight = realCuganMaxSizeHeight,
-                        skipMaxWidth = realCuganSkipMaxSizeWidth,
-                        skipMaxHeight = realCuganSkipMaxSizeHeight,
-                        tileSize = tileSize,
-                        precision = preferences.realCuganPrecision().get(),
-                        fp16Arithmetic = preferences.realCuganFp16Arithmetic().get(),
-                        processingBackend = preferences.realCuganProcessingBackend().get(),
-                    )
-                    val pageVariant = enhancementVariant()
-
-                    val cachedFile = ImageEnhancementCache.getCachedImage(mId, cId, pIdx, configHash, pageVariant)
-                    if (cachedFile != null) {
-                        logcat(LogPriority.DEBUG) { "ReaderPageImageView: onPageSelected - Page $pIdx found in cache" }
-                        val uriString = cachedFile.toURI().toString()
-                        if (currentLoadedUri != uriString) {
-                            viewScope.launchIO {
-                                val transformedSource = enhancedImageSourceFactory?.invoke(cachedFile)
-                                if (transformedSource != null) {
-                                    withUIContext {
-                                        setProcessedSource(cachedFile, transformedSource = transformedSource)
-                                    }
-                                    return@launchIO
-                                }
-
-                                val bitmap = decodeEnhancedBitmap(cachedFile)
-
-                                if (bitmap != null) {
-                                    withUIContext {
-                                        setProcessedSource(cachedFile, bitmap = bitmap)
-                                    }
-                                } else {
-                                    healInvalidEnhancedCache(mId, cId, pIdx, configHash, readerPage, forceCurrentPage = true)
-                                    startEnhancementPolling(mId, cId, pIdx, configHash, readerPage)
-                                }
-                            }
-                        } else {
-                            updateStatus(context.stringResource(MR.strings.reader_status_processed))
-                        }
-                    } else if (ImageEnhancementCache.isSkipped(mId, cId, pIdx, configHash, pageVariant)) {
-                        updateStatus(context.stringResource(MR.strings.reader_status_raw))
-                    } else {
-                        updateStatus(context.stringResource(MR.strings.reader_status_processing))
-                        enqueueEnhancement(mId, cId, pIdx, highPriority = true)
-                        startEnhancementPolling(mId, cId, pIdx, configHash)
-                    }
-                }
-
-                ImageEnhancer.cancelRequestsLessThan(context.applicationContext, mId, cId, pIdx)
-                ImageEnhancer.cancelRequestsGreaterThan(context.applicationContext, mId, cId, pIdx + preloadSize)
-            }
+            refreshEnhancementForCurrentPage()
         }
 
         if (panelModeActive) {
@@ -1346,6 +1398,33 @@ open class ReaderPageImageView @JvmOverloads constructor(
         val view = pageView as? SubsamplingScaleImageView ?: return
         val target = panelStops.getOrNull(index) ?: return
         if (panelModeActive) spotlightFor(view).targetRect = target
+        if (!view.isReady) {
+            // pageView is assigned the moment a fresh SubsamplingScaleImageView is created (see
+            // prepareNonAnimatedImageView), before its image has actually decoded — a fast
+            // advance/retreat tap in that window must not call panelStopTarget() against a view
+            // whose sWidth/sHeight aren't set yet: the library's own minScale computation divides
+            // by the (still zero) source dimensions, produces Infinity, and the coerceIn(minScale,
+            // maxScale) below throws. Confirmed via a real crash (IllegalArgumentException:
+            // "maximum ... is less than minimum Infinity") reachable from a plain tap-to-advance
+            // gesture. Mirror jumpToPanelStop's existing onReady-deferred handling for the same
+            // race instead of animating against an unready view.
+            view.setOnImageEventListener(
+                object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
+                    override fun onReady() {
+                        view.setupZoom(config)
+                        val (scale, center) = view.panelStopTarget(target)
+                        view.setScaleAndCenter(scale, center)
+                        panelSpotlight?.invalidate()
+                        this@ReaderPageImageView.onImageLoaded()
+                    }
+
+                    override fun onImageLoadError(e: Exception) {
+                        onImageLoadError(e)
+                    }
+                },
+            )
+            return
+        }
         val (scale, center) = view.panelStopTarget(target)
         view.animateScaleAndCenter(scale, center)!!
             .withEasing(EASE_OUT_QUAD)
