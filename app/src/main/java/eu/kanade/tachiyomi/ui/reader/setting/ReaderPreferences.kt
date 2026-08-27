@@ -86,6 +86,9 @@ class ReaderPreferences(
         true,
     )
 
+    /** Off by default: expands an oversized panel into its detected speech bubbles before the full panel, instead of leaving it scaled to fit both axes. See SpeechBubblePanelSubStopGenerator. */
+    fun panelByPanelBubbleStopsEnabled() = preferenceStore.getBoolean("pref_panel_by_panel_bubble_stops_enabled", false)
+
     /** Opacity of the scrim dimming everything outside the current panel, 0 (transparent) to 100 (opaque black). */
     val panelByPanelOverlayOpacity: Preference<Int> = preferenceStore.getInt(
         "pref_panel_by_panel_overlay_opacity",

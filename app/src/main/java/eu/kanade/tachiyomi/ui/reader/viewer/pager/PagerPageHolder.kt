@@ -13,6 +13,7 @@ import eu.kanade.tachiyomi.ui.reader.viewer.ReaderPageImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderProgressIndicator
 import eu.kanade.tachiyomi.ui.reader.viewer.panel.Panel
 import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelRect
+import eu.kanade.tachiyomi.ui.reader.viewer.panel.SpeechBubblePanelSubStopGenerator
 import eu.kanade.tachiyomi.ui.reader.viewer.panel.flattenToStops
 import eu.kanade.tachiyomi.ui.webview.WebViewActivity
 import eu.kanade.tachiyomi.widget.ViewPagerAdapter
@@ -373,8 +374,8 @@ class PagerPageHolder(
         forceFirstStop: Boolean = false,
     ) {
         val panels = viewer.panelDetector.detect(page, imageBytes, viewer.panelDirection)
-        detectedPanels = panels
-        val stops = panels.flattenToStops(
+        detectedPanels = expandForCurrentView(panels, viewer)
+        val stops = detectedPanels!!.flattenToStops(
             // Only the chapter's first page gets the reveal — showIntro isn't a "every page"
             // toggle, it's specifically for orienting the reader when a new chapter begins.
             showIntro = viewer.readerPreferences.panelByPanelShowFullPageIntro.get() && page.index == 0,
@@ -382,6 +383,23 @@ class PagerPageHolder(
         )
         withUIContext {
             setPanelStops(stops, anchorRect = anchorRect, forceFirstStop = forceFirstStop)
+        }
+    }
+
+    /**
+     * Runs [SpeechBubblePanelSubStopGenerator] per panel against this holder's *current* view
+     * dimensions when the feature is enabled, producing a fresh [Panel] list with [Panel.subStops]
+     * populated accordingly. Always orientation-agnostic detection stays cached; this step never
+     * is — it re-runs every time this is called (initial load, direction change, rotation-fresh
+     * holder, or the reactive toggle in [bubbleStopsJob]).
+     */
+    private suspend fun expandForCurrentView(panels: List<Panel>, viewer: PanelByPanelViewer): List<Panel> {
+        if (!viewer.readerPreferences.panelByPanelBubbleStopsEnabled().get()) return panels
+        return panels.map { panel ->
+            val subStops = SpeechBubblePanelSubStopGenerator.generate(
+                panel, viewer.panelDirection, width, height,
+            ) { null }
+            panel.copy(subStops = subStops)
         }
     }
 
