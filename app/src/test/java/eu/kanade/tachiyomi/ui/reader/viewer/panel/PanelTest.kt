@@ -179,4 +179,27 @@ class PanelTest {
 
         assertEquals(1, resumeIndex) // still bubble2, not reset to bubble1
     }
+
+    @Test
+    fun `resumeIndexAfterReshape does not crash on the no-panels-detected fallback with intro enabled`() {
+        // The detector's fallback (nothing confidently detected, decode failure, timeout) is
+        // exactly one Panel(PanelRect.FULL_PAGE) with no substops. flattenToStops collapses this
+        // to a single stop with no intro/outro brackets regardless of showIntro/showOutro — a
+        // reshape trigger (toggling a preference, or rotating) on such a page must not assume a
+        // bracket exists just because showIntro is true here. In practice old and new panel lists
+        // are identical in this scenario, since the sub-stop generator never expands a
+        // full-page panel.
+        val fallbackPanels = listOf(Panel(bounds = PanelRect.FULL_PAGE))
+
+        val resumeIndex = fallbackPanels.resumeIndexAfterReshape(
+            oldFlatIndex = 0,
+            oldPanels = fallbackPanels,
+            oldShowIntro = true,
+            oldShowOutro = true,
+            newShowIntro = true,
+            newShowOutro = true,
+        )
+
+        assertEquals(0, resumeIndex)
+    }
 }

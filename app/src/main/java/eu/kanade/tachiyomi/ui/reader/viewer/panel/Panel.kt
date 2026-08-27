@@ -55,20 +55,51 @@ fun List<Panel>.flattenToStops(showIntro: Boolean = false, showOutro: Boolean = 
 }
 
 /**
+ * Each panel's own stops — its [Panel.subStops] if present, otherwise a single-element list of
+ * just its own [Panel.bounds]. This is the exact per-panel breakdown [flattenToStops] concatenates
+ * (before intro/outro bracketing), factored out so every consumer of that breakdown — including
+ * the single-full-page-fallback special case below — agrees on it, instead of each re-deriving it
+ * inline and risking one of them skipping the special case.
+ */
+private fun List<Panel>.stopsPerPanel(): List<List<PanelRect>> =
+    map { it.subStops.ifEmpty { listOf(it.bounds) } }
+
+/**
+ * True when this panel list is exactly [flattenToStops]' no-panels-detected fallback: a single
+ * panel whose only stop is the full page. [flattenToStops] special-cases this to a single stop
+ * with **no** intro/outro brackets, regardless of [showIntro]/[showOutro] — any code computing a
+ * flat-stop cursor from [showIntro] must check this first, or it'll look for a bracket that was
+ * never actually added.
+ */
+private fun List<Panel>.isSingleFullPageFallback(stopsPerPanel: List<List<PanelRect>> = stopsPerPanel()): Boolean =
+    stopsPerPanel.size == 1 && single().bounds == PanelRect.FULL_PAGE && stopsPerPanel.single().size == 1
+
+/**
+ * The flat-stop index at which [panelIndex]'s own stops begin, mirroring [flattenToStops]' own
+ * offset math exactly — including its no-brackets special case for the single-full-page fallback
+ * (see [isSingleFullPageFallback]), where the answer is always `0` regardless of [showIntro].
+ */
+private fun List<Panel>.cursorStartForPanel(panelIndex: Int, showIntro: Boolean): Int {
+    val stopsPerPanel = stopsPerPanel()
+    if (isSingleFullPageFallback(stopsPerPanel)) return 0
+    return (if (showIntro) 1 else 0) + stopsPerPanel.take(panelIndex).sumOf { it.size }
+}
+
+/**
  * Maps a flat stop index (as produced by [flattenToStops] with the same [showIntro]/[showOutro])
  * back to the index of the panel in this list that owns it, or `null` if [flatIndex] is an
  * intro/outro full-page bracket stop, which belongs to no panel.
  */
 fun List<Panel>.panelIndexForFlatStop(flatIndex: Int, showIntro: Boolean, showOutro: Boolean): Int? {
-    val stopsPerPanel = map { it.subStops.ifEmpty { listOf(it.bounds) }.size }
-    if (stopsPerPanel.size == 1 && this.single().bounds == PanelRect.FULL_PAGE && stopsPerPanel.single() == 1) {
+    val stopsPerPanel = stopsPerPanel()
+    if (isSingleFullPageFallback(stopsPerPanel)) {
         // flattenToStops' own no-duplicate-fallback rule: exactly one stop, no brackets at all.
         return if (flatIndex == 0) 0 else null
     }
     var cursor = if (showIntro) 1 else 0
-    for ((panelIndex, count) in stopsPerPanel.withIndex()) {
-        if (flatIndex in cursor until cursor + count) return panelIndex
-        cursor += count
+    for ((panelIndex, stops) in stopsPerPanel.withIndex()) {
+        if (flatIndex in cursor until cursor + stops.size) return panelIndex
+        cursor += stops.size
     }
     return null // falls in the outro bracket (or out of range)
 }
@@ -80,6 +111,12 @@ fun List<Panel>.panelIndexForFlatStop(flatIndex: Int, showIntro: Boolean, showOu
  * new stop; otherwise (shrank or unchanged), resumes at the nearest-by-distance stop among only
  * that panel's new stops. See the design spec's "Resuming across a stop-list reshape" section
  * for why one rule serves both triggers.
+ *
+ * Both the old- and new-side cursor math go through [cursorStartForPanel], which itself defers to
+ * [isSingleFullPageFallback] — without that, a no-panels-detected page (a single
+ * `Panel(bounds = PanelRect.FULL_PAGE)`, no brackets ever added by [flattenToStops] regardless of
+ * [oldShowIntro]/[newShowIntro]) would have this function assume a bracket exists that
+ * [flattenToStops] never actually emitted, throwing or returning an out-of-range index.
  */
 fun List<Panel>.resumeIndexAfterReshape(
     oldFlatIndex: Int,
@@ -91,17 +128,13 @@ fun List<Panel>.resumeIndexAfterReshape(
 ): Int {
     val ownerPanelIndex = oldPanels.panelIndexForFlatStop(oldFlatIndex, oldShowIntro, oldShowOutro)
         ?: return 0
-    val oldStopsForOwner = oldPanels[ownerPanelIndex].subStops.ifEmpty { listOf(oldPanels[ownerPanelIndex].bounds) }
-    val oldAnchorRect = run {
-        val cursorStart = (if (oldShowIntro) 1 else 0) +
-            oldPanels.take(ownerPanelIndex).sumOf { it.subStops.ifEmpty { listOf(it.bounds) }.size }
-        oldStopsForOwner[oldFlatIndex - cursorStart]
-    }
+    val oldStopsForOwner = oldPanels.stopsPerPanel()[ownerPanelIndex]
+    val oldCursorStart = oldPanels.cursorStartForPanel(ownerPanelIndex, oldShowIntro)
+    val oldAnchorRect = oldStopsForOwner[oldFlatIndex - oldCursorStart]
 
-    val newStopsPerPanel = map { it.subStops.ifEmpty { listOf(it.bounds) } }
+    val newStopsPerPanel = stopsPerPanel()
     val newStopsForOwner = newStopsPerPanel.getOrNull(ownerPanelIndex) ?: return 0
-    val newCursorStart = (if (newShowIntro) 1 else 0) +
-        newStopsPerPanel.take(ownerPanelIndex).sumOf { it.size }
+    val newCursorStart = cursorStartForPanel(ownerPanelIndex, newShowIntro)
 
     return if (newStopsForOwner.size > oldStopsForOwner.size) {
         newCursorStart
