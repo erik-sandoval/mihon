@@ -25,6 +25,14 @@ data class PanelRect(
 @Serializable
 data class Panel(
     val bounds: PanelRect,
+    /**
+     * This panel's detected speech-bubble boxes, in reading order, normalized to page
+     * coordinates (same convention as [bounds]). Populated once at detection time from the
+     * same ML inference pass that detects panels — orientation-agnostic, cached alongside
+     * [bounds]. Whether these get used to expand this panel into multiple stops is a
+     * separate, live decision (see [PanelSubStopGenerator]), never baked in here.
+     */
+    val bubbles: List<PanelRect> = emptyList(),
     val subStops: List<PanelRect> = emptyList(),
 )
 
