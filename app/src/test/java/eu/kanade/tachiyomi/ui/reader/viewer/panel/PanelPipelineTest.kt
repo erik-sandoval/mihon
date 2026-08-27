@@ -236,4 +236,43 @@ class PanelPipelineTest {
             )
         }
     }
+
+    @Test
+    fun `associateBubbles attaches each bubble to the panel whose bounds contain its center, in reading order`() {
+        // A real gutter gap between the panels (0.45 to 0.55) so a bubble can genuinely fall in
+        // neither's bounds, rather than the panels' edges exactly meeting at a shared boundary.
+        val leftPanel = PanelRect(0f, 0f, 0.45f, 1f)
+        val rightPanel = PanelRect(0.55f, 0f, 1f, 1f)
+        // Two bubbles inside rightPanel, given out of reading order on purpose.
+        val bubbleBottom = PanelRect(0.6f, 0.6f, 0.9f, 0.7f)
+        val bubbleTop = PanelRect(0.6f, 0.1f, 0.9f, 0.2f)
+        val bubbleInGutter = PanelRect(0.48f, 0.4f, 0.52f, 0.45f) // center x=0.5, inside neither panel
+
+        val result = PanelPipeline.associateBubbles(
+            panels = listOf(leftPanel, rightPanel),
+            bubbles = listOf(bubbleBottom, bubbleTop, bubbleInGutter),
+            rightToLeft = false,
+        )
+
+        assertEquals(2, result.size)
+        assertEquals(leftPanel, result[0].bounds)
+        assertEquals(emptyList<PanelRect>(), result[0].bubbles)
+        assertEquals(rightPanel, result[1].bounds)
+        assertEquals(listOf(bubbleTop, bubbleBottom), result[1].bubbles)
+    }
+
+    @Test
+    fun `associateBubbles orders a panel's bubbles right-to-left when the panel list is RTL`() {
+        val panel = PanelRect(0f, 0f, 1f, 1f)
+        val bubbleLeft = PanelRect(0.1f, 0.1f, 0.3f, 0.2f)
+        val bubbleRight = PanelRect(0.7f, 0.1f, 0.9f, 0.2f)
+
+        val result = PanelPipeline.associateBubbles(
+            panels = listOf(panel),
+            bubbles = listOf(bubbleLeft, bubbleRight),
+            rightToLeft = true,
+        )
+
+        assertEquals(listOf(bubbleRight, bubbleLeft), result.single().bubbles)
+    }
 }

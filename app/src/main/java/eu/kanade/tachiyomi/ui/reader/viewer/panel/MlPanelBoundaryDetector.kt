@@ -33,7 +33,7 @@ class MlPanelBoundaryDetector private constructor(
 
     private val decoder = YoloPanelDecoder(inputSize = inputSize)
 
-    fun detect(page: Bitmap, rightToLeft: Boolean, label: String = ""): List<PanelRect> = synchronized(lock) {
+    fun detect(page: Bitmap, rightToLeft: Boolean, label: String = ""): List<Panel> = synchronized(lock) {
         val result = try {
             run(page)
         } catch (t: Throwable) {
@@ -45,7 +45,8 @@ class MlPanelBoundaryDetector private constructor(
             result.panels, result.bubbles, result.pageW, result.pageH, rightToLeft,
         )
         logcat { "panelDebug [$label] ${result.pageW}x${result.pageH} planned=$planned" }
-        if (planned.size < 2) listOf(PanelRect.FULL_PAGE) else planned
+        val finalPanels = if (planned.size < 2) listOf(PanelRect.FULL_PAGE) else planned
+        PanelPipeline.associateBubbles(finalPanels, result.bubbles, rightToLeft)
     }
 
     /** ML detections for one page, normalized to [0,1]; page dimensions are in pixels. */

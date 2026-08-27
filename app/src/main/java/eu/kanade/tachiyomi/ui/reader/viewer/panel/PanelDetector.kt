@@ -85,13 +85,9 @@ class PanelDetector(
             BitmapFactory.Options().apply { inSampleSize = sample },
         ) ?: return listOf(Panel(PanelRect.FULL_PAGE))
 
-        val rects = detector.detect(smallBitmap, rightToLeft = direction == PanelDirection.RTL, label = label)
+        val panels = detector.detect(smallBitmap, rightToLeft = direction == PanelDirection.RTL, label = label)
         smallBitmap.recycle()
-
-        // Sub-stops (multiple zoom stops within one wide panel) aren't used here: the ML pipeline's
-        // own merge/divide planner already produces exactly the final stop list, so every entry —
-        // whether it's a raw detected panel or a planned merge/split piece — is exactly one stop.
-        return rects.map { rect -> Panel(rect) }
+        return panels
     }
 
     private fun sampleSizeFor(width: Int, height: Int, maxDimension: Int): Int {
@@ -113,6 +109,6 @@ class PanelDetector(
     companion object {
         private const val DETECTION_BUDGET_MS = 2000L
         private const val MAX_DETECTION_DIMENSION = 900
-        private const val DETECTOR_VERSION = 44
+        private const val DETECTOR_VERSION = 45
     }
 }

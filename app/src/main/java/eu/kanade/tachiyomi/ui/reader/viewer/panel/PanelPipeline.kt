@@ -234,4 +234,19 @@ object PanelPipeline {
 
     private fun verticalOverlap(a: PanelRect, b: PanelRect) = a.top < b.bottom && b.top < a.bottom
     private fun horizontalOverlap(a: PanelRect, b: PanelRect) = a.left < b.right && b.left < a.right
+
+    /**
+     * Attaches each bubble to whichever final panel's bounds contains its center (same
+     * containment test [pad] already uses for bubble-to-panel ownership), ordered per panel in
+     * natural reading order. A bubble that falls in the gutter between panels (no panel's bounds
+     * contains its center) is simply not attached to any panel — it's still shown when that
+     * panel's own bounds render (nothing is hidden), it just isn't its own stepping stop.
+     */
+    fun associateBubbles(panels: List<PanelRect>, bubbles: List<PanelRect>, rightToLeft: Boolean): List<Panel> {
+        return panels.map { panel ->
+            val owned = bubbles.filter { b -> b.centerX in panel.left..panel.right && b.centerY in panel.top..panel.bottom }
+            val ordered = if (owned.size > 1) PanelOrdering.order(owned, rightToLeft, isSpread = false) else owned
+            Panel(bounds = panel, bubbles = ordered)
+        }
+    }
 }
