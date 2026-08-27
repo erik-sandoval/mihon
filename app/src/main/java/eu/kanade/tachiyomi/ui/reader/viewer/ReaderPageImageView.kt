@@ -43,6 +43,7 @@ import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView.EASE_IN_OUT_QUAD
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView.EASE_OUT_QUAD
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView.SCALE_TYPE_CENTER_INSIDE
+import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelSubsamplingImageView
 import com.github.chrisbanes.photoview.PhotoView
 import eu.kanade.tachiyomi.data.coil.cropBorders
 import eu.kanade.domain.manga.model.upscaleEnabledOverride
@@ -555,18 +556,19 @@ open class ReaderPageImageView @JvmOverloads constructor(
         filterNot { it.width >= FULL_PAGE_DEBUG_THRESHOLD && it.height >= FULL_PAGE_DEBUG_THRESHOLD }
 
     private fun spotlightFor(view: SubsamplingScaleImageView): PanelSpotlightOverlay {
-        panelSpotlight?.let { return it }
-        val overlay = PanelSpotlightOverlay(context).also {
-            it.sourceView = view
-            it.opacityPercent = panelOverlayOpacityPercent
+        val overlay = panelSpotlight ?: PanelSpotlightOverlay(context).also {
+            addView(it, MATCH_PARENT, MATCH_PARENT)
+            panelSpotlight = it
         }
-        addView(overlay, MATCH_PARENT, MATCH_PARENT)
-        panelSpotlight = overlay
+        overlay.sourceView = view
+        overlay.opacityPercent = panelOverlayOpacityPercent
+        overlay.bringToFront()
         return overlay
     }
 
     private fun setSpotlightVisible(visible: Boolean) {
         val overlay = panelSpotlight ?: return
+        overlay.bringToFront()
         val target = if (visible) 1f else 0f
         if (overlay.alpha == target) return
         overlay.animate().alpha(target).setDuration(SPOTLIGHT_FADE_MS).start()
@@ -739,12 +741,13 @@ open class ReaderPageImageView @JvmOverloads constructor(
         val scale = view.scale
         val sourceWidth = view.sWidth
         val sourceHeight = view.sHeight
-        if (scale <= 0f || sourceWidth <= 0 || sourceHeight <= 0 || view.width <= 0 || view.height <= 0) {
+        if (scale <= 0f || scale.isNaN() || center.x.isNaN() || center.y.isNaN() || sourceWidth <= 0 || sourceHeight <= 0 || view.width <= 0 || view.height <= 0) {
             return null
         }
 
         val left = view.width / 2f - center.x * scale
         val top = view.height / 2f - center.y * scale
+        if (left.isNaN() || top.isNaN()) return null
         return RectF(
             left,
             top,
@@ -841,8 +844,8 @@ open class ReaderPageImageView @JvmOverloads constructor(
             alpha = 0f
             isVisible = true
             setDoubleTapZoomDuration((targetConfig?.zoomDuration ?: 500).getSystemScaledDuration())
-            setMinimumScaleType(targetConfig?.minimumScaleType ?: SCALE_TYPE_CENTER_INSIDE)
-            setMinimumDpi(1)
+            val minScaleType = if (panelModeActive) SubsamplingScaleImageView.SCALE_TYPE_CUSTOM else (targetConfig?.minimumScaleType ?: SCALE_TYPE_CENTER_INSIDE)
+            setMinimumScaleType(minScaleType)
             setCropBorders(targetConfig?.cropBorders ?: false)
             setOnImageEventListener(
                 object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
@@ -869,6 +872,13 @@ open class ReaderPageImageView @JvmOverloads constructor(
                                 targetScale > targetMinScale + 0.01f
 
                         if (wasZoomed) {
+                            if (this@apply is PanelSubsamplingImageView && panelModeActive) {
+                                val target = panelStops.getOrNull(panelStopIndex)
+                                val (baseScale, baseCenter) = target?.let { panelStopTarget(it) } ?: (minScale to PointF())
+                                activePanelRect = target
+                                panelBaseScale = baseScale
+                                panelBaseCenter = baseCenter
+                            }
                             val zoomFactor = targetScale / targetMinScale
                             val mappedCenter = PointF(
                                 (targetCenter.x / targetWidth) * sWidth,
@@ -907,15 +917,13 @@ open class ReaderPageImageView @JvmOverloads constructor(
                         val revealStart = 0f
                         val revealEnd = 1f
                         val imageRect = displayedImageRect(this@apply)
-                        val contentLeft = imageRect?.left ?: 0f
-                        val contentWidth = imageRect?.width() ?: width.toFloat()
+                        val contentLeft = imageRect?.left?.takeIf { !it.isNaN() } ?: 0f
+                        val contentWidth = imageRect?.width()?.takeIf { !it.isNaN() && it > 0f } ?: width.toFloat().coerceAtLeast(1f)
                         val viewWidth = width.coerceAtLeast(1)
-                        val clipLeft = (contentLeft + contentWidth * revealStart)
-                            .roundToInt()
-                            .coerceIn(0, viewWidth - 1)
-                        val clipRight = (contentLeft + contentWidth * revealEnd)
-                            .roundToInt()
-                            .coerceIn(clipLeft + 1, viewWidth)
+                        val rawClipLeft = contentLeft + contentWidth * revealStart
+                        val clipLeft = if (rawClipLeft.isNaN()) 0 else rawClipLeft.roundToInt().coerceIn(0, viewWidth - 1)
+                        val rawClipRight = contentLeft + contentWidth * revealEnd
+                        val clipRight = if (rawClipRight.isNaN()) viewWidth else rawClipRight.roundToInt().coerceIn(clipLeft + 1, viewWidth)
                         clipBounds = Rect(clipLeft, 0, clipRight, height)
                         alpha = 0f
 
@@ -983,6 +991,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                     enhancedOverlay.alpha = 1f
                     enhancedOverlay.isVisible = true
                     statusView.bringToFront()
+                    panelSpotlight?.bringToFront()
                     enhancedBitmap = previewBitmap
                     isSettingProcessedImage = true
                     pageView?.alpha = 0f
@@ -1024,6 +1033,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
             enhancedOverlay.alpha = 1f
             enhancedOverlay.isVisible = true
             statusView.bringToFront()
+            panelSpotlight?.bringToFront()
             enhancedBitmap = bitmap
             isSettingProcessedImage = true
             pageView?.alpha = 0f
@@ -1537,19 +1547,58 @@ open class ReaderPageImageView @JvmOverloads constructor(
         setSpotlightVisible(true)
     }
 
+    fun isZoomedIn(): Boolean {
+        val view = pageView as? SubsamplingScaleImageView ?: return false
+        if (!view.isReady) return false
+        val baseScale = if (view is PanelSubsamplingImageView && view.panelBaseScale > 0f) view.panelBaseScale else view.minScale
+        return view.scale > (baseScale * 1.08f)
+    }
+
+    override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
+        super.onSizeChanged(w, h, oldw, oldh)
+        if (panelModeActive && panelStops.isNotEmpty() && (w != oldw || h != oldh) && w > 0 && h > 0) {
+            jumpToPanelStop(panelStopIndex)
+        }
+    }
+
     private fun jumpToPanelStop(index: Int) {
         val view = pageView as? SubsamplingScaleImageView ?: return
         val target = panelStops.getOrNull(index) ?: return
         if (panelModeActive) spotlightFor(view).targetRect = target
         if (view.isReady) {
             val (scale, center) = view.panelStopTarget(target)
+            if (view is PanelSubsamplingImageView) {
+                view.activePanelRect = target
+                view.panelBaseScale = scale
+                view.panelBaseCenter = center
+            }
+            if (panelModeActive) {
+                view.setMinimumScaleType(SubsamplingScaleImageView.SCALE_TYPE_CUSTOM)
+                view.minScale = scale
+                view.maxScale = scale * 3.0f
+                view.setDoubleTapZoomScale(scale * 2.0f)
+                view.setDoubleTapZoomStyle(SubsamplingScaleImageView.ZOOM_FOCUS_CENTER)
+            }
             view.setScaleAndCenter(scale, center)
+            setSpotlightVisible(true)
         } else {
             view.setOnImageEventListener(
                 object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
                     override fun onReady() {
                         view.setupZoom(config)
                         val (scale, center) = view.panelStopTarget(target)
+                        if (view is PanelSubsamplingImageView) {
+                            view.activePanelRect = target
+                            view.panelBaseScale = scale
+                            view.panelBaseCenter = center
+                        }
+                        if (panelModeActive) {
+                            view.setMinimumScaleType(SubsamplingScaleImageView.SCALE_TYPE_CUSTOM)
+                            view.minScale = scale
+                            view.maxScale = scale * 3.0f
+                            view.setDoubleTapZoomScale(scale * 2.0f)
+                            view.setDoubleTapZoomStyle(SubsamplingScaleImageView.ZOOM_FOCUS_CENTER)
+                        }
                         view.setScaleAndCenter(scale, center)
                         // targetRect was set above while the view wasn't ready yet, so that
                         // assignment's own invalidate() drew nothing (sourceToViewCoord needs a
@@ -1558,6 +1607,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
                         // the view can actually resolve view coordinates, so the spotlight can't
                         // end up stuck undrawn until some later, unrelated stop change.
                         panelSpotlight?.invalidate()
+                        setSpotlightVisible(true)
                         this@ReaderPageImageView.onImageLoaded()
                     }
 
@@ -1572,7 +1622,6 @@ open class ReaderPageImageView @JvmOverloads constructor(
     private fun animateToPanelStop(index: Int) {
         val view = pageView as? SubsamplingScaleImageView ?: return
         val target = panelStops.getOrNull(index) ?: return
-        if (panelModeActive) spotlightFor(view).targetRect = target
         if (!view.isReady) {
             // pageView is assigned the moment a fresh SubsamplingScaleImageView is created (see
             // prepareNonAnimatedImageView), before its image has actually decoded — a fast
@@ -1588,8 +1637,22 @@ open class ReaderPageImageView @JvmOverloads constructor(
                     override fun onReady() {
                         view.setupZoom(config)
                         val (scale, center) = view.panelStopTarget(target)
+                        if (view is PanelSubsamplingImageView) {
+                            view.activePanelRect = target
+                            view.panelBaseScale = scale
+                            view.panelBaseCenter = center
+                        }
+                        if (panelModeActive) {
+                            view.setMinimumScaleType(SubsamplingScaleImageView.SCALE_TYPE_CUSTOM)
+                            view.minScale = scale
+                            view.maxScale = scale * 3.0f
+                            view.setDoubleTapZoomScale(scale * 2.0f)
+                            view.setDoubleTapZoomStyle(SubsamplingScaleImageView.ZOOM_FOCUS_CENTER)
+                            spotlightFor(view).targetRect = target
+                        }
                         view.setScaleAndCenter(scale, center)
                         panelSpotlight?.invalidate()
+                        setSpotlightVisible(true)
                         this@ReaderPageImageView.onImageLoaded()
                     }
 
@@ -1601,10 +1664,57 @@ open class ReaderPageImageView @JvmOverloads constructor(
             return
         }
         val (scale, center) = view.panelStopTarget(target)
+        if (view is PanelSubsamplingImageView) {
+            view.isProgrammaticAnimating = true
+            view.activePanelRect = target
+            view.panelBaseScale = scale
+            view.panelBaseCenter = center
+        }
+        if (panelModeActive) {
+            view.setMinimumScaleType(SubsamplingScaleImageView.SCALE_TYPE_CUSTOM)
+            val currentScale = view.scale.takeIf { it > 0f && !it.isNaN() } ?: scale
+            view.minScale = minOf(currentScale, scale)
+            view.maxScale = maxOf(scale * 3.0f, view.maxScale)
+            view.setDoubleTapZoomScale(scale * 2.0f)
+            view.setDoubleTapZoomStyle(SubsamplingScaleImageView.ZOOM_FOCUS_CENTER)
+        }
+        userMovedAwayFromStop = false
+        if (panelModeActive) {
+            spotlightFor(view).animateToRect(target, 350L)
+            setSpotlightVisible(true)
+        }
         view.animateScaleAndCenter(scale, center)!!
-            .withEasing(EASE_OUT_QUAD)
-            .withDuration(250)
+            .withEasing(SubsamplingScaleImageView.EASE_IN_OUT_QUAD)
+            .withDuration(350)
             .withInterruptible(true)
+            .withOnAnimationEventListener(
+                object : SubsamplingScaleImageView.DefaultOnAnimationEventListener() {
+                    override fun onComplete() {
+                        if (view is PanelSubsamplingImageView) {
+                            view.minScale = scale
+                            view.maxScale = scale * 3.0f
+                            view.isProgrammaticAnimating = false
+                            view.clampToPanelBounds()
+                        }
+                    }
+
+                    override fun onInterruptedByUser() {
+                        if (view is PanelSubsamplingImageView) {
+                            view.minScale = scale
+                            view.maxScale = scale * 3.0f
+                            view.isProgrammaticAnimating = false
+                        }
+                    }
+
+                    override fun onInterruptedByNewAnim() {
+                        if (view is PanelSubsamplingImageView) {
+                            view.minScale = scale
+                            view.maxScale = scale * 3.0f
+                            view.isProgrammaticAnimating = false
+                        }
+                    }
+                },
+            )
             .start()
     }
 
@@ -1642,7 +1752,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
         val targetScale = min(
             widthBudget / (rect.width * sWidth),
             heightBudget / (rect.height * sHeight),
-        ).coerceIn(minScale, maxScale)
+        )
         val center = PointF(
             (rect.left + rect.width / 2f) * sWidth,
             (rect.top + rect.height / 2f) * sHeight,
@@ -1795,6 +1905,8 @@ open class ReaderPageImageView @JvmOverloads constructor(
     private fun createSubsamplingPageView(): SubsamplingScaleImageView {
         return if (isWebtoon) {
             WebtoonSubsamplingImageView(context)
+        } else if (panelModeActive) {
+            PanelSubsamplingImageView(context)
         } else {
             SubsamplingScaleImageView(context)
         }.apply {
@@ -1811,13 +1923,12 @@ open class ReaderPageImageView @JvmOverloads constructor(
                 SubsamplingScaleImageView.PAN_LIMIT_INSIDE
             }
             setPanLimit(panLimit)
-            setMinimumTileDpi(180)
-            // Panel-by-panel is a fully guided flow — pinch/pan/double-tap would let the reader
-            // zoom out from under it. Disabled here (not just left alone) so it can't happen at
-            // all until the page is rebuilt for a different reading mode.
+            setEagerLoadingEnabled(true)
+            // Panel-by-panel enables in-panel zoom/pan with bounded scale and coordinates.
             if (panelModeActive) {
-                setZoomEnabled(false)
-                setPanEnabled(false)
+                setZoomEnabled(true)
+                setPanEnabled(true)
+                setMinimumScaleType(SubsamplingScaleImageView.SCALE_TYPE_CUSTOM)
             }
             setOnStateChangedListener(
                 object : SubsamplingScaleImageView.OnStateChangedListener {
@@ -1829,7 +1940,6 @@ open class ReaderPageImageView @JvmOverloads constructor(
                     override fun onCenterChanged(newCenter: PointF?, origin: Int) {
                         if (origin != SubsamplingScaleImageView.ORIGIN_ANIM) {
                             userMovedAwayFromStop = true
-                            setSpotlightVisible(false)
                         }
                         panelSpotlight?.invalidate()
                     }
@@ -1849,6 +1959,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
     }
 
     private fun SubsamplingScaleImageView.setupZoom(config: Config?) {
+        if (panelModeActive) return
         // 5x zoom
         maxScale = scale * MAX_ZOOM_SCALE
         setDoubleTapZoomScale(scale * 2)
@@ -1867,14 +1978,15 @@ open class ReaderPageImageView @JvmOverloads constructor(
         streamFn: (() -> java.io.InputStream)? = null,
     ) = (pageView as? SubsamplingScaleImageView)?.apply {
         setDoubleTapZoomDuration(config.zoomDuration.getSystemScaledDuration())
-        setMinimumScaleType(config.minimumScaleType)
+        val minScaleType = if (panelModeActive) SubsamplingScaleImageView.SCALE_TYPE_CUSTOM else config.minimumScaleType
+        setMinimumScaleType(minScaleType)
         setMinimumDpi(1) // Just so that very small image will be fit for initial load
         setCropBorders(config.cropBorders)
         setOnImageEventListener(
             object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
                 override fun onReady() {
                     setupZoom(config)
-                    if (isVisibleOnScreen()) landscapeZoom(true)
+                    if (isVisibleOnScreen() && !panelModeActive) landscapeZoom(true)
                     this@ReaderPageImageView.onImageLoaded()
                 }
 

@@ -36,51 +36,65 @@ object PanelPipeline {
         pageH: Int,
         rightToLeft: Boolean,
     ): List<PanelRect> {
-        // Add any large, roughly-rectangular region the model left uncovered as a panel, so missed
-        // panels get numbered too — then order and plan as usual.
-        // Panel-by-panel is paced one beat at a time regardless of reading direction, so both LTR
-        // and RTL comics use the gentle manga profile: only truly tiny panels merge, and panels are
-        // never further divided (see [PanelPlanner.Config.MANGA]).
         val config = PanelPlanner.Config.MANGA
         val isSpread = pageW.toFloat() / pageH.toFloat() >= SPREAD_ASPECT_MIN
         val filled = PanelGapFiller.fill(panels)
+        val bubbleAligned = alignBoundariesToSpeechBubbles(filled, bubbles)
         logcat {
             "PanelOrderDebug rightToLeft=$rightToLeft isSpread=$isSpread pageW=$pageW pageH=$pageH filled=" +
-                filled.joinToString(prefix = "[", postfix = "]") { "(l=${it.left},t=${it.top},r=${it.right},b=${it.bottom})" }
+                bubbleAligned.joinToString(prefix = "[", postfix = "]") { "(l=${it.left},t=${it.top},r=${it.right},b=${it.bottom})" }
         }
-        val ordered = PanelOrdering.order(filled, rightToLeft, isSpread)
+        val ordered = PanelOrdering.order(bubbleAligned, rightToLeft, isSpread)
         logcat {
             "PanelOrderDebug ordered=" +
                 ordered.joinToString(prefix = "[", postfix = "]") { "(l=${it.left},t=${it.top},r=${it.right},b=${it.bottom})" }
         }
         val planned = PanelPlanner.plan(ordered, bubbles, pageW, pageH, rightToLeft, config)
         if (planned.size >= 2) return closeInteriorGaps(extendToPageEdges(pad(planned, bubbles)))
-        // Detection found too little to work with (nothing, or one region covering most of the
-        // page — a background too noisy/textured for the model to resolve real panel boundaries on
-        // is a common cause). There's no real panel geometry here to zoom into, so show the whole
-        // page rather than guessing at a geometric split (panning through quarters of a page that's
-        // actually one panel, or a busy background, reads as broken rather than helpful).
         return listOf(PanelRect.FULL_PAGE)
+    }
+
+    /**
+     * Adjusts panel boundaries so they don't awkwardly slice through speech bubbles or bleeding character heads
+     * belonging to a neighboring panel (especially on frameless / borderless character panels where background
+     * detection overshoots into dialogue and portrait artwork).
+     */
+    private fun alignBoundariesToSpeechBubbles(panels: List<PanelRect>, bubbles: List<PanelRect>): List<PanelRect> {
+        if (panels.size <= 1 || bubbles.isEmpty()) return panels
+        val result = panels.toMutableList()
+
+        for (i in result.indices) {
+            val p = result[i]
+            // Check vertical neighbors below 'p'
+            val neighborsBelow = result.indices.filter { it != i && result[it].centerY > p.centerY && horizontalOverlap(p, result[it]) }
+            for (belowIdx in neighborsBelow) {
+                val belowPanel = result[belowIdx]
+                // Find bubbles that straddle or penetrate the boundary between p and belowPanel
+                val straddlingBubbles = bubbles.filter { b ->
+                    horizontalOverlap(b, belowPanel) &&
+                        b.top < p.bottom &&
+                        b.bottom >= belowPanel.top &&
+                        b.top > (p.top + p.height * 0.35f)
+                }
+                if (straddlingBubbles.isNotEmpty()) {
+                    val highestBubbleTop = straddlingBubbles.minOf { it.top }
+                    // Generous clearance above the highest speech bubble of the cluster to capture character hair/head
+                    val headClearance = 0.075f
+                    val cutY = (highestBubbleTop - headClearance).coerceAtLeast(p.top + 0.15f)
+                    if (cutY < p.bottom) {
+                        result[i] = PanelRect(p.left, p.top, p.right, cutY)
+                        result[belowIdx] = PanelRect(belowPanel.left, minOf(belowPanel.top, cutY), belowPanel.right, belowPanel.bottom)
+                    }
+                }
+            }
+        }
+        return result
     }
 
     /**
      * Grows each panel by [BASE_MARGIN] of its own size per side — capped so it never crosses more
      * than halfway into a neighbouring panel's gap (see [cappedMargin]) — then further, only as far
-     * as actually needed, to fully contain any speech bubble that belongs to it (its centre falls
-     * inside the panel) but bleeds past the panel's own tight detected edge, which real bubbles
-     * routinely do. A flat margin sized to cover the worst overflowing bubble would waste zoom on
-     * every ordinary panel that has none at all; this only grows a panel that actually needs it,
-     * and only by as much as that specific bubble needs. Bubble growth is intentionally NOT capped
-     * by neighbour distance — a bubble genuinely bleeding into a neighbour's territory still needs
-     * to be shown whole.
-     *
-     * A bubble that straddles the narrow gutter between two panels can have its centre fall inside
-     * *neither* panel's raw box — confirmed via logcat on Official Bleach ch.17 p16: a "COME IN FOR
-     * A MINUTE" bubble's centre sat in the ~1%-of-page-width gap between two panels' raw edges, so
-     * neither panel claimed it, neither grew to include it, and the shared cut line ran straight
-     * through it. [unclaimedBubbles] falls back to "does it overlap this panel's raw box at all" for
-     * that case only, so at least one adjacent panel grows to show it whole; a bubble with a clear
-     * single owner (the normal case) is unaffected.
+     * as actually needed, to fully contain any speech bubble that belongs to it.
      */
     private fun pad(panels: List<PanelRect>, bubbles: List<PanelRect>): List<PanelRect> {
         val unclaimed = unclaimedBubbles(panels, bubbles)
@@ -111,52 +125,40 @@ object PanelPipeline {
     private fun overlaps(p: PanelRect, b: PanelRect) =
         b.left < p.right && b.right > p.left && b.top < p.bottom && b.bottom > p.top
 
-    /**
-     * [BASE_MARGIN] scales with a panel's own size, so a panel that's most of the page next to a
-     * narrow sibling gets a margin many times the sibling's entire width — enough to swallow most of
-     * it. Capping each side's margin at half the raw gap to the nearest panel in that direction (if
-     * any) means two neighbours split their shared gutter evenly regardless of the size mismatch
-     * between them; a side with no neighbour keeps the full proportional margin; [extendToPageEdges]
-     * picks up whatever's still short of the page edge afterward.
-     */
     private fun marginLeft(p: PanelRect, panels: List<PanelRect>): Float {
-        val gap = panels.filter { it !== p && verticalOverlap(it, p) && it.right <= p.left }
-            .minOfOrNull { p.left - it.right }
+        val neighbors = panels.filter { it !== p && verticalOverlap(it, p) && it.centerX < p.centerX }
+        if (neighbors.isEmpty()) return p.width * BASE_MARGIN
+        val gap = neighbors.minOf { (p.left - it.right) }
         return cappedMargin(p.width, gap)
     }
 
     private fun marginRight(p: PanelRect, panels: List<PanelRect>): Float {
-        val gap = panels.filter { it !== p && verticalOverlap(it, p) && it.left >= p.right }
-            .minOfOrNull { it.left - p.right }
+        val neighbors = panels.filter { it !== p && verticalOverlap(it, p) && it.centerX > p.centerX }
+        if (neighbors.isEmpty()) return p.width * BASE_MARGIN
+        val gap = neighbors.minOf { (it.left - p.right) }
         return cappedMargin(p.width, gap)
     }
 
     private fun marginTop(p: PanelRect, panels: List<PanelRect>): Float {
-        val gap = panels.filter { it !== p && horizontalOverlap(it, p) && it.bottom <= p.top }
-            .minOfOrNull { p.top - it.bottom }
+        val neighbors = panels.filter { it !== p && horizontalOverlap(it, p) && it.centerY < p.centerY }
+        if (neighbors.isEmpty()) return p.height * BASE_MARGIN
+        val gap = neighbors.minOf { (p.top - it.bottom) }
         return cappedMargin(p.height, gap)
     }
 
     private fun marginBottom(p: PanelRect, panels: List<PanelRect>): Float {
-        val gap = panels.filter { it !== p && horizontalOverlap(it, p) && it.top >= p.bottom }
-            .minOfOrNull { it.top - p.bottom }
+        val neighbors = panels.filter { it !== p && horizontalOverlap(it, p) && it.centerY > p.centerY }
+        if (neighbors.isEmpty()) return p.height * BASE_MARGIN
+        val gap = neighbors.minOf { (it.top - p.bottom) }
         return cappedMargin(p.height, gap)
     }
 
-    private fun cappedMargin(panelSize: Float, gapToNeighbor: Float?): Float {
+    private fun cappedMargin(panelSize: Float, gapToNeighbor: Float): Float {
+        if (gapToNeighbor <= 0f) return 0f
         val proportional = panelSize * BASE_MARGIN
-        return if (gapToNeighbor == null) proportional else min(proportional, gapToNeighbor / 2f)
+        return min(proportional, gapToNeighbor / 2f)
     }
 
-    /**
-     * A panel whose own margin (see [pad]) doesn't happen to reach the page edge leaves a strip of
-     * page content permanently unreachable during panel-by-panel navigation, since nothing else will
-     * ever show it either. Whichever panel is outermost on a given side (no other panel already
-     * reaches further that way within its row or column) gets extended toward that edge, capped at
-     * [MAX_EDGE_EXTENSION] — enough to absorb a real sliver of art the model just under-detected,
-     * without dragging a panel across a large decorative border or blank margin to chase a page edge
-     * that's genuinely just empty space.
-     */
     private fun extendToPageEdges(panels: List<PanelRect>): List<PanelRect> = panels.map { p ->
         var left = p.left
         var top = p.top
@@ -177,54 +179,22 @@ object PanelPipeline {
         PanelRect(left, top, right, bottom)
     }
 
-    /**
-     * Even after [pad] and [extendToPageEdges], two adjacent panels can still leave a strip of
-     * real page content between them that neither's own margin reaches — confirmed on a real page
-     * (Official One Piece ch.944 p15): two panels 7% apart in their raw detection each grew inward
-     * by their own BASE_MARGIN-derived amount ([cappedMargin]'s proportional cap, not the full
-     * half-the-gap split its own kdoc describes — that only kicks in once proportional growth
-     * would otherwise exceed it), leaving a ~2.1% strip in the middle that was never shown by
-     * either panel during panel-by-panel navigation. Splits any such leftover interior gap evenly
-     * between the two panels bordering it, so nothing between two real detected panels is ever
-     * permanently unreachable — the same "don't lose real content" principle as
-     * [extendToPageEdges], just for a gap with a panel on both sides instead of the page edge on
-     * one.
-     */
-    /**
-     * The neighbor to extend toward on each edge is chosen by position relative to [p]'s own
-     * (pre-padding) edge — not by whether it currently sits beyond the already-padded bound.
-     * Filtering by the padded bound (`it.left >= right` etc.) let a genuinely-nearby neighbor that
-     * padding had already pushed past (a common few-percent overlap from normal ML jitter, not a
-     * real gap) get excluded, so the search skipped past it to a much farther panel and extended
-     * this panel's edge all the way there — swallowing the skipped-over panel's entire territory
-     * (confirmed on a real page, Official Vinland Saga ch.1 p68: the top panel's crop grew from a
-     * raw bottom of ~0.355 to a padded 0.527, well past its true immediate neighbor at top~0.31-33,
-     * because that neighbor's top already sat before the padded bottom and got filtered out,
-     * leaving a much farther panel at top~0.69 as the only remaining candidate).
-     *
-     * This is still growth-only, same as before the fix — once the true nearest neighbor is found,
-     * only extend into a genuine remaining positive gap; if the neighbor is already at or before
-     * the current bound, leave the edge untouched rather than shrinking it back. Shrinking would
-     * undo a legitimate prior overlap from [pad]'s own bubble-inclusion growth (two panels that
-     * share a gutter-straddling bubble are meant to overlap so each shows it whole — confirmed
-     * regression against that exact case, Official Bleach ch.17 p16, while first writing this fix).
-     */
     private fun closeInteriorGaps(panels: List<PanelRect>): List<PanelRect> = panels.map { p ->
         var left = p.left
         var top = p.top
         var right = p.right
         var bottom = p.bottom
 
-        panels.filter { it !== p && verticalOverlap(it, p) && it.left > p.left }
+        panels.filter { it !== p && verticalOverlap(it, p) && it.centerX > p.centerX }
             .minByOrNull { it.left }
             ?.let { nearest -> if (nearest.left > right) right += (nearest.left - right) / 2f }
-        panels.filter { it !== p && verticalOverlap(it, p) && it.right < p.right }
+        panels.filter { it !== p && verticalOverlap(it, p) && it.centerX < p.centerX }
             .maxByOrNull { it.right }
             ?.let { nearest -> if (nearest.right < left) left -= (left - nearest.right) / 2f }
-        panels.filter { it !== p && horizontalOverlap(it, p) && it.top > p.top }
+        panels.filter { it !== p && horizontalOverlap(it, p) && it.centerY > p.centerY }
             .minByOrNull { it.top }
             ?.let { nearest -> if (nearest.top > bottom) bottom += (nearest.top - bottom) / 2f }
-        panels.filter { it !== p && horizontalOverlap(it, p) && it.bottom < p.bottom }
+        panels.filter { it !== p && horizontalOverlap(it, p) && it.centerY < p.centerY }
             .maxByOrNull { it.bottom }
             ?.let { nearest -> if (nearest.bottom < top) top -= (top - nearest.bottom) / 2f }
 
@@ -234,43 +204,15 @@ object PanelPipeline {
     private fun verticalOverlap(a: PanelRect, b: PanelRect) = a.top < b.bottom && b.top < a.bottom
     private fun horizontalOverlap(a: PanelRect, b: PanelRect) = a.left < b.right && b.left < a.right
 
-    /**
-     * Groups the detected bubbles under their owning final panel, each group ordered in natural
-     * reading order.
-     *
-     * Ownership is resolved globally, once, before grouping, and every bubble ends up owned by at
-     * most **one** panel: the first panel in list order whose bounds contain the bubble's centre.
-     * Enforcing that single ownership is the whole point of doing this as one pass rather than an
-     * independent per-panel filter. These are the *final* panels, i.e. post-[pad] — and [pad]
-     * deliberately grows *every* panel that overlaps a gutter-straddling bubble until it fully
-     * contains that bubble (see its [unclaimedBubbles] fallback), so after padding such a bubble's
-     * centre genuinely does land inside two adjacent panels' bounds. Attaching it to both would
-     * make the reader step through the same bubble twice: once near the end of one panel's bubble
-     * sequence, again at the start of the next.
-     *
-     * The tie-break is first-in-list-order purely because it's simple and deterministic; both
-     * panels show the bubble whole either way (that's what [pad] guaranteed), so which of the two
-     * gets the extra stepping stop is a wash. A bubble whose centre falls inside no panel at all
-     * is attached to none — nothing is hidden (whichever padded panel overlaps it still renders
-     * it), it just doesn't get its own stepping stop.
-     */
     fun associateBubbles(panels: List<PanelRect>, bubbles: List<PanelRect>, rightToLeft: Boolean): List<Panel> {
-        // -1 for a bubble no panel's bounds contain; that group is simply never read back below.
         val bubblesByOwner = bubbles.groupBy { b -> panels.indexOfFirst { containsCenter(it, b) } }
         return panels.mapIndexed { panelIndex, panel ->
             val owned = bubblesByOwner[panelIndex].orEmpty()
-            // PanelOrdering.order's ROW_BAND is documented as a fraction of the *page* height, and
-            // these bubbles live inside one (typically much smaller) panel — so in its no-clean-cut
-            // fallback path it could in principle band two genuinely different bubble rows together.
-            // Considered and accepted for now: it only affects that fallback path, which is unlikely
-            // for the sparse, well-separated rects a typical bubble layout produces. Reworking
-            // PanelOrdering to take a local reference height is out of scope here.
             val ordered = if (owned.size > 1) PanelOrdering.order(owned, rightToLeft, isSpread = false) else owned
             Panel(bounds = panel, bubbles = ordered)
         }
     }
 
-    /** Shared bubble-to-panel ownership test: is [b]'s centre inside [p]'s bounds? */
     private fun containsCenter(p: PanelRect, b: PanelRect) =
         b.centerX in p.left..p.right && b.centerY in p.top..p.bottom
 }

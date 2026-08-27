@@ -126,8 +126,77 @@ class YoloPanelDecoder(
             if (r <= l || bo <= t) return@mapNotNull null
             PanelRect(l, t, r, bo)
         }
-        if (minSideFrac <= 0f) return rects
-        return mergeSlivers(rects, minSideFrac)
+        val afterSlivers = if (minSideFrac > 0f) mergeSlivers(rects, minSideFrac) else rects
+        return consolidateFragments(afterSlivers)
+    }
+
+    /**
+     * Merges heavily overlapping, aligned fragments of the same panel.
+     * When ML detection fractures a single panel into multiple pieces (e.g. a title banner or
+     * ceiling strip plus the main scene below), the pieces share the same column/row alignment
+     * and overlap each other significantly along the perpendicular axis without a separating gutter.
+     */
+    private fun consolidateFragments(rects: List<PanelRect>): List<PanelRect> {
+        if (rects.size <= 1) return rects
+        val current = rects.toMutableList()
+        var changed = true
+        while (changed) {
+            changed = false
+            var i = 0
+            while (i < current.size) {
+                var j = i + 1
+                while (j < current.size) {
+                    val a = current[i]
+                    val b = current[j]
+                    if (shouldConsolidate(a, b, current)) {
+                        current[i] = union(a, b)
+                        current.removeAt(j)
+                        changed = true
+                    } else {
+                        j++
+                    }
+                }
+                i++
+            }
+        }
+        return current
+    }
+
+    private fun shouldConsolidate(a: PanelRect, b: PanelRect, all: List<PanelRect>): Boolean {
+        val xOverlap = overlap(a.left, a.right, b.left, b.right)
+        val yOverlap = overlap(a.top, a.bottom, b.top, b.bottom)
+        val minW = minOf(a.width, b.width)
+        val maxW = maxOf(a.width, b.width)
+        val minH = minOf(a.height, b.height)
+        val maxH = maxOf(a.height, b.height)
+        if (minW <= 0f || minH <= 0f || maxW <= 0f || maxH <= 0f) return false
+
+        // Vertical stacking (same column): both panels share similar column width and horizontal alignment
+        val alignedVertically = (minW / maxW >= 0.75f) && (xOverlap / minW >= 0.80f)
+        val overlappingVertically = (yOverlap / minH) >= 0.20f
+        val isVerticalFragment = (minH < 0.22f || minOf(a.area, b.area) < 0.12f)
+
+        // Horizontal stacking (same row): both panels share similar row height and vertical alignment
+        val alignedHorizontally = (minH / maxH >= 0.75f) && (yOverlap / minH >= 0.80f)
+        val overlappingHorizontally = (xOverlap / minW) >= 0.20f
+        val isHorizontalFragment = (minW < 0.22f || minOf(a.area, b.area) < 0.12f)
+
+        val candidate = if (alignedVertically && overlappingVertically && isVerticalFragment) {
+            union(a, b)
+        } else if (alignedHorizontally && overlappingHorizontally && isHorizontalFragment) {
+            union(a, b)
+        } else {
+            return false
+        }
+
+        // Ensure merging doesn't swallow a third distinct panel on the page
+        return all.none { it !== a && it !== b && containsCenter(candidate, it) }
+    }
+
+    private fun containsCenter(outer: PanelRect, inner: PanelRect): Boolean {
+        val cx = (inner.left + inner.right) / 2f
+        val cy = (inner.top + inner.bottom) / 2f
+        return cx > outer.left && cx < outer.right && cy > outer.top && cy < outer.bottom
     }
 
     /**

@@ -109,9 +109,7 @@ class PanelDetector(
     companion object {
         private const val DETECTION_BUDGET_MS = 2000L
         private const val MAX_DETECTION_DIMENSION = 900
-        // 46: PanelPipeline.associateBubbles now resolves bubble ownership globally, so a
-        // gutter-straddling bubble is attached to exactly one panel instead of both. Pages
-        // already cached under 45 hold the duplicated attachment and must re-detect.
-        private const val DETECTOR_VERSION = 46
+        // 50: Increased head clearance above straddling speech bubbles for full character portraits.
+        private const val DETECTOR_VERSION = 50
     }
 }

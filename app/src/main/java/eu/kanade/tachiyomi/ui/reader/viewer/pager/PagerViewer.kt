@@ -130,34 +130,24 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             }
             false
         }
-        // Only ever claims a gesture when the current page actually has a panel stop to step to
-        // — for every other viewer this is false, leaving the pager's native swipe-to-turn-page
-        // untouched.
+        pager.navigationBlockedGate = {
+            val holder = (currentPage as? ReaderPage)?.let(::getPageHolder)
+            holder?.isZoomedIn() == true
+        }
+
+        // Claims the swipe gesture in panel-by-panel mode to step panel-by-panel (and turn pages when on pages with no panels or at the end)
         pager.panelSwipeInterceptGate = {
             val holder = (currentPage as? ReaderPage)?.let(::getPageHolder)
-            holder != null && (
-                // Detection is async — claim the gesture during that window too, so a swipe right
-                // after a fresh page appears waits for it instead of the pager's native swipe
-                // immediately turning the page out from under it.
-                holder.isDetectingPanels() ||
-                    (holder.hasPanelStops() && (holder.canAdvancePanelStop() || holder.canRetreatPanelStop()))
-                )
+            holder != null && !holder.isZoomedIn()
         }
-        // moveLeft()/moveRight() already step a panel stop when one's available in that direction
-        // and fall back to turning the page when it isn't. By design, the base swipe convention
-        // mirrors the active reading direction — RTL: swipe right advances, swipe left goes back;
-        // LTR: swipe left advances, swipe right goes back. panelByPanelSwipeInverted is a separate,
-        // explicit user toggle that flips that base convention; both the reading direction and the
-        // toggle are read live here (not baked in at setup time) since either can change while the
-        // viewer is alive. Only PanelByPanelViewer ever has a panelDirection to consult — the cast
-        // below reads as RTL (forwardIsLeftward = false) for any other viewer, but that's moot:
-        // panelSwipeInterceptGate above only ever claims the gesture when the current holder has
-        // panel stops, which is exclusive to that subclass.
         pager.panelSwipeListener = { leftward ->
-            val forwardIsLeftward = (this as? PanelByPanelViewer)?.panelDirection == PanelDirection.LTR
-            val invert = readerPreferences.panelByPanelSwipeInverted.get()
-            val forward = if (forwardIsLeftward != invert) leftward else !leftward
-            if (forward) moveRight() else moveLeft()
+            val holder = (currentPage as? ReaderPage)?.let(::getPageHolder)
+            if (holder?.isZoomedIn() != true) {
+                val forwardIsLeftward = (this as? PanelByPanelViewer)?.panelDirection == PanelDirection.LTR
+                val invert = readerPreferences.panelByPanelSwipeInverted.get()
+                val forward = if (forwardIsLeftward != invert) leftward else !leftward
+                if (forward) moveRight() else moveLeft()
+            }
         }
 
         config.dualPageSplitChangedListener = { enabled ->
@@ -421,13 +411,14 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     protected open fun moveRight() {
         if (pager.currentItem != adapter.count - 1) {
             val holder = (currentPage as? ReaderPage)?.let(::getPageHolder)
+            val animate = config.usePageTransitions || this is PanelByPanelViewer
             when {
                 holder != null && holder.isDetectingPanels() -> {} // wait for detection, don't skip ahead a page
                 holder != null && holder.hasPanelStops() && holder.canAdvancePanelStop() -> holder.advancePanelStop()
                 holder != null && holder.hasPanelStops() ->
-                    pager.setCurrentItem(pager.currentItem + 1, config.usePageTransitions)
+                    pager.setCurrentItem(pager.currentItem + 1, animate)
                 holder != null && config.navigateToPan && holder.canPanRight() -> holder.panRight()
-                else -> pager.setCurrentItem(pager.currentItem + 1, config.usePageTransitions)
+                else -> pager.setCurrentItem(pager.currentItem + 1, animate)
             }
         }
     }
@@ -438,13 +429,14 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
     protected open fun moveLeft() {
         if (pager.currentItem != 0) {
             val holder = (currentPage as? ReaderPage)?.let(::getPageHolder)
+            val animate = config.usePageTransitions || this is PanelByPanelViewer
             when {
                 holder != null && holder.isDetectingPanels() -> {} // wait for detection, don't skip back a page
                 holder != null && holder.hasPanelStops() && holder.canRetreatPanelStop() -> holder.retreatPanelStop()
                 holder != null && holder.hasPanelStops() ->
-                    pager.setCurrentItem(pager.currentItem - 1, config.usePageTransitions)
+                    pager.setCurrentItem(pager.currentItem - 1, animate)
                 holder != null && config.navigateToPan && holder.canPanLeft() -> holder.panLeft()
-                else -> pager.setCurrentItem(pager.currentItem - 1, config.usePageTransitions)
+                else -> pager.setCurrentItem(pager.currentItem - 1, animate)
             }
         }
     }

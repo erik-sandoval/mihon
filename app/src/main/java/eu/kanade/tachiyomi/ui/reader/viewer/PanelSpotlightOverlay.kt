@@ -1,35 +1,61 @@
 package eu.kanade.tachiyomi.ui.reader.viewer
 
+import android.animation.ValueAnimator
 import android.content.Context
 import android.graphics.Canvas
 import android.graphics.Color
 import android.graphics.Paint
 import android.view.View
+import androidx.core.animation.doOnEnd
+import androidx.interpolator.view.animation.FastOutSlowInInterpolator
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
 import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelRect
 
 /**
- * Dims everything outside [targetRect] on top of [sourceView], so the panel currently being read
- * in panel-by-panel mode stands out even when neighboring content bleeds into view (a small merged
- * panel, the breathing-room padding around a panel's edges, or a stop that isn't zoomed all the
- * way in). This view draws nothing on its own — the whole page still renders on [sourceView]
- * underneath; this only adds the scrim + cutout on top.
+ * Dims everything outside the active panel on top of [sourceView], so the panel currently being read
+ * in panel-by-panel mode stands out even when neighboring content bleeds into view.
  *
- * [targetRect] is normalized page coordinates. It's mapped to the live on-screen rect via
- * [SubsamplingScaleImageView.sourceToViewCoord] fresh on every draw, so the cutout tracks pan/zoom
- * — including a guided animation still in flight — without needing any animation logic of its own.
- * The view's own [alpha] (driven externally) is what fades the whole scrim in and out; [opacityPercent]
- * is the separate, user-configured strength of the scrim itself once shown.
+ * Smoothly morphs and tracks the cutout rectangle across camera transitions without disappearing or flickering.
  */
 class PanelSpotlightOverlay(context: Context) : View(context) {
 
     var sourceView: SubsamplingScaleImageView? = null
 
+    var currentDisplayRect: PanelRect? = null
+    private var rectAnimator: ValueAnimator? = null
+
     var targetRect: PanelRect? = null
         set(value) {
+            rectAnimator?.cancel()
+            currentDisplayRect = null
             field = value
             invalidate()
         }
+
+    fun animateToRect(newRect: PanelRect, duration: Long = 250L) {
+        val startRect = currentDisplayRect ?: targetRect ?: newRect
+        targetRect = newRect
+        rectAnimator?.cancel()
+        rectAnimator = ValueAnimator.ofFloat(0f, 1f).apply {
+            this.duration = duration
+            interpolator = FastOutSlowInInterpolator()
+            addUpdateListener { anim ->
+                val f = anim.animatedFraction
+                currentDisplayRect = PanelRect(
+                    left = startRect.left + (newRect.left - startRect.left) * f,
+                    top = startRect.top + (newRect.top - startRect.top) * f,
+                    right = startRect.right + (newRect.right - startRect.right) * f,
+                    bottom = startRect.bottom + (newRect.bottom - startRect.bottom) * f,
+                )
+                invalidate()
+            }
+            doOnEnd {
+                currentDisplayRect = null
+                invalidate()
+            }
+            start()
+        }
+    }
 
     /** User-configured scrim strength, 0 (transparent, effectively off) to 100 (opaque black). */
     var opacityPercent: Int = DEFAULT_OPACITY_PERCENT
@@ -107,7 +133,7 @@ class PanelSpotlightOverlay(context: Context) : View(context) {
             }
         }
 
-        val rect = targetRect ?: return
+        val rect = currentDisplayRect ?: targetRect ?: return
         // A stop covering (close to) the whole page has nothing meaningful to dim.
         if (rect.width >= FULL_PAGE_THRESHOLD && rect.height >= FULL_PAGE_THRESHOLD) return
         if (opacityPercent <= 0) return

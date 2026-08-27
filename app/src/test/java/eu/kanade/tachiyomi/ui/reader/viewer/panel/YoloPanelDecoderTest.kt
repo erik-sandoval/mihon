@@ -216,9 +216,36 @@ class YoloPanelDecoderTest {
     }
 
     @Test
+    fun overlappingFragmentAndMainPanelMergeIntoSinglePanel() {
+        val lb = Letterbox.fit(640, 640, 640)
+        val (raw, shape) = endToEnd(
+            listOf(
+                floatArrayOf(0f, 0f, 640f, 179f, 0.95f, 0f), // Panel 1 (Top)
+                floatArrayOf(0f, 185f, 640f, 268f, 0.88f, 0f), // Box 2 (Title banner / ceiling fragment, h=83px)
+                floatArrayOf(0f, 230f, 640f, 448f, 0.92f, 0f), // Box 3 (Conference table, h=218px)
+                floatArrayOf(0f, 403f, 640f, 627f, 0.91f, 0f), // Box 4 (Character portrait, h=224px)
+            ),
+        )
+        val panels = decoder.decode(raw, shape, lb, 640, 640).panels
+        assertEquals(3, panels.size) // 4 raw detections consolidated into 3 real panels
+
+        val top = panels[0]
+        near(0f, top.top); near(0.28f, top.bottom, 0.02f)
+
+        val middle = panels[1]
+        near(0.289f, middle.top, 0.02f)
+        near(0.70f, middle.bottom, 0.02f) // Combines Box 2 + Box 3!
+
+        val bottom = panels[2]
+        near(0.63f, bottom.top, 0.02f)
+        near(0.98f, bottom.bottom, 0.02f)
+    }
+
+    @Test
     fun malformedShapesReturnEmpty() {
         val lb = Letterbox.fit(640, 640, 640)
         assertTrue(decoder.decode(FloatArray(10), intArrayOf(10), lb, 640, 640).panels.isEmpty())
         assertTrue(decoder.decode(FloatArray(10), intArrayOf(1, 5, 2), lb, 640, 640).panels.isEmpty())
     }
 }
+

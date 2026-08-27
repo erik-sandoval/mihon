@@ -37,11 +37,23 @@ open class Pager(
      */
     var panelSwipeInterceptGate: (() -> Boolean)? = null
 
+    /**
+     * Consulted before fling or swipe processing. Returning true blocks page/panel navigation gestures
+     * (e.g. while the user is zoomed in inspecting a panel).
+     */
+    var navigationBlockedGate: (() -> Boolean)? = null
+
     /** Invoked with the physical drag direction (true = leftward) once such a swipe is detected. */
     var panelSwipeListener: ((leftward: Boolean) -> Unit)? = null
 
     /** Whether the gesture currently in progress was claimed via [panelSwipeInterceptGate]. */
     private var interceptingForPanelSwipe = false
+
+    /** Tracks whether the current gesture had multiple active pointers (e.g. pinch-to-zoom). */
+    private var wasMultiTouch = false
+    private var swipeStartX = 0f
+    private var swipeStartY = 0f
+    private var swipeFired = false
 
     /**
      * Gesture listener that implements tap, long tap, and (when claimed via
@@ -61,8 +73,13 @@ open class Pager(
         }
 
         override fun onFling(e1: MotionEvent?, e2: MotionEvent, velocityX: Float, velocityY: Float): Boolean {
+            if (wasMultiTouch) return false
+            if (navigationBlockedGate?.invoke() == true) return false
             if (!interceptingForPanelSwipe || abs(velocityX) <= abs(velocityY)) return false
-            panelSwipeListener?.invoke(velocityX < 0)
+            if (!swipeFired) {
+                swipeFired = true
+                panelSwipeListener?.invoke(velocityX < 0)
+            }
             return true
         }
     }
@@ -81,6 +98,26 @@ open class Pager(
      * Dispatches a touch event.
      */
     override fun dispatchTouchEvent(ev: MotionEvent): Boolean {
+        if (ev.actionMasked == MotionEvent.ACTION_POINTER_DOWN) {
+            wasMultiTouch = true
+        }
+        if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
+            wasMultiTouch = false
+            swipeStartX = ev.x
+            swipeStartY = ev.y
+            swipeFired = false
+            interceptingForPanelSwipe = panelSwipeInterceptGate?.invoke() == true
+        }
+        if (interceptingForPanelSwipe && !wasMultiTouch && navigationBlockedGate?.invoke() != true) {
+            if ((ev.actionMasked == MotionEvent.ACTION_UP || ev.actionMasked == MotionEvent.ACTION_CANCEL) && !swipeFired) {
+                val dx = ev.x - swipeStartX
+                val dy = ev.y - swipeStartY
+                if (abs(dx) > 60f && abs(dx) > abs(dy) * 1.2f) {
+                    swipeFired = true
+                    panelSwipeListener?.invoke(dx < 0)
+                }
+            }
+        }
         val handled = super.dispatchTouchEvent(ev)
         if (isGestureDetectorEnabled) {
             gestureDetector.onTouchEvent(ev)
@@ -96,6 +133,7 @@ open class Pager(
      * [GestureDetectorWithLongTap.Listener.onFling] to resolve instead.
      */
     override fun onInterceptTouchEvent(ev: MotionEvent): Boolean {
+        if (navigationBlockedGate?.invoke() == true) return false
         if (ev.actionMasked == MotionEvent.ACTION_DOWN) {
             interceptingForPanelSwipe = panelSwipeInterceptGate?.invoke() == true
         }
@@ -112,6 +150,7 @@ open class Pager(
      * [requestDisallowInterceptTouchEvent].
      */
     override fun onTouchEvent(ev: MotionEvent): Boolean {
+        if (interceptingForPanelSwipe) return false
         return try {
             super.onTouchEvent(ev)
         } catch (e: NullPointerException) {
