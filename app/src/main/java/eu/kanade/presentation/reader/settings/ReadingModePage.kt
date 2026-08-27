@@ -153,7 +153,7 @@ private fun ColumnScope.PanelByPanelViewerSettings(
 
     CheckboxItem(
         label = stringResource(MR.strings.pref_panel_by_panel_bubble_stops_enabled),
-        pref = viewModel.preferences.panelByPanelBubbleStopsEnabled(),
+        pref = viewModel.preferences.panelByPanelBubbleStopsEnabled,
     )
 
     val overlayOpacity by viewModel.preferences.panelByPanelOverlayOpacity.collectAsState()

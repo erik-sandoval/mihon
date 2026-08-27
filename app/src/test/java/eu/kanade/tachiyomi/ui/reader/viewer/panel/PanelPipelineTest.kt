@@ -262,6 +262,40 @@ class PanelPipelineTest {
     }
 
     @Test
+    fun `a gutter-straddling bubble becomes a stepping stop for exactly one panel, not both`() {
+        // Same real captured page as bubbleStraddlingGutterBetweenTwoPanelsIsShownWholeByBoth
+        // (Official Bleach ch.17 p16), run through the real pipeline rather than hand-built panels:
+        // pad() deliberately grows BOTH panels until each fully contains that gutter bubble, so in
+        // the final (padded) panel list the bubble's centre genuinely falls inside both. An
+        // independent per-panel containment filter therefore attached it to both, and the reader
+        // stepped through the same bubble twice — once ending one panel's sequence, once starting
+        // the next. Showing it whole in both crops is correct and must not regress (asserted by
+        // that sibling test); owning it twice is not.
+        val rightPanel = PanelRect(0.46095777f, 0.093161315f, 0.9081674f, 0.30152285f)
+        val leftPanel = PanelRect(0.07759259f, 0.09368136f, 0.44976175f, 0.30146083f)
+        val bubble = PanelRect(0.41516086f, 0.1693387f, 0.5012333f, 0.25637332f)
+
+        val regions = PanelPipeline.zoomRegions(
+            listOf(rightPanel, leftPanel), listOf(bubble), 1000, 1000, rightToLeft = true,
+        )
+        // Precondition for this test to be meaningful: the bubble's centre must really land inside
+        // more than one final panel, i.e. this is the ambiguous case, not a trivially-owned bubble.
+        val containingRegions = regions.count { r ->
+            bubble.centerX in r.left..r.right && bubble.centerY in r.top..r.bottom
+        }
+        assertTrue(containingRegions >= 2, "expected the padded panels to overlap the bubble's centre: $regions")
+
+        val panels = PanelPipeline.associateBubbles(regions, listOf(bubble), rightToLeft = true)
+
+        assertEquals(
+            1,
+            panels.count { bubble in it.bubbles },
+            "the gutter bubble must be a stepping stop for exactly one panel: " +
+                panels.joinToString { "${it.bounds} -> ${it.bubbles}" },
+        )
+    }
+
+    @Test
     fun `associateBubbles orders a panel's bubbles right-to-left when the panel list is RTL`() {
         val panel = PanelRect(0f, 0f, 1f, 1f)
         val bubbleLeft = PanelRect(0.1f, 0.1f, 0.3f, 0.2f)

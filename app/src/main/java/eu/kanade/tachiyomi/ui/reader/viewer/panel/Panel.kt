@@ -117,6 +117,15 @@ fun List<Panel>.panelIndexForFlatStop(flatIndex: Int, showIntro: Boolean, showOu
  * `Panel(bounds = PanelRect.FULL_PAGE)`, no brackets ever added by [flattenToStops] regardless of
  * [oldShowIntro]/[newShowIntro]) would have this function assume a bracket exists that
  * [flattenToStops] never actually emitted, throwing or returning an out-of-range index.
+ *
+ * When [oldFlatIndex] was an intro/outro bracket (owned by no panel, so there's no panel shape to
+ * compare), the two are resolved separately: the intro resumes at the new list's first stop, the
+ * outro at its last. Collapsing both to `0` — as this originally did — meant toggling the
+ * preference while sitting on the trailing full-page reveal bounced the reader all the way back to
+ * the start of the page. Which bracket it actually was can only be told from the index itself
+ * (both brackets are the identical [PanelRect.FULL_PAGE] rect, and [oldShowIntro]/[oldShowOutro]
+ * only say a bracket *could* be there), so both are checked against the old flattened list's real
+ * extents rather than inferred from the flags alone.
  */
 fun List<Panel>.resumeIndexAfterReshape(
     oldFlatIndex: Int,

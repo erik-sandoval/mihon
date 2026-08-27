@@ -86,8 +86,19 @@ class ReaderPreferences(
         true,
     )
 
-    /** Off by default: expands an oversized panel into its detected speech bubbles before the full panel, instead of leaving it scaled to fit both axes. See SpeechBubblePanelSubStopGenerator. */
-    fun panelByPanelBubbleStopsEnabled() = preferenceStore.getBoolean("pref_panel_by_panel_bubble_stops_enabled", false)
+    /**
+     * Off by default: expands an oversized panel into its detected speech bubbles before the full
+     * panel, instead of leaving it scaled to fit both axes. See SpeechBubblePanelSubStopGenerator.
+     *
+     * A `val` like every sibling here, deliberately — `Preference.collectAsState()` memoizes with
+     * `remember(this) { changes() }` and the preference class has no `equals()`, so identity is the
+     * key. A function handing back a fresh instance per call would break that at every Compose call
+     * site, restarting the flow collection on each recomposition.
+     */
+    val panelByPanelBubbleStopsEnabled: Preference<Boolean> = preferenceStore.getBoolean(
+        "pref_panel_by_panel_bubble_stops_enabled",
+        false,
+    )
 
     /** Opacity of the scrim dimming everything outside the current panel, 0 (transparent) to 100 (opaque black). */
     val panelByPanelOverlayOpacity: Preference<Int> = preferenceStore.getInt(

@@ -166,24 +166,35 @@ class PagerPageHolder(
                     }
             }
             bubbleStopsJob = scope.launch {
-                viewer.readerPreferences.panelByPanelBubbleStopsEnabled().changes().drop(1).collectLatest {
-                    val oldPanels = detectedPanels ?: return@collectLatest
-                    val oldFlatIndex = panelStopIndex
-                    val oldShowIntro = viewer.readerPreferences.panelByPanelShowFullPageIntro.get() && page.index == 0
-                    val oldShowOutro = viewer.readerPreferences.panelByPanelShowFullPageOutro.get()
+                // Skip the initial replay: the value already in effect when this holder was created
+                // was applied by expandForCurrentView during the page's own first loadPanels() call,
+                // so reacting to it here would just re-flatten to the identical stop list. (Note
+                // this is a different reason from directionJob's own drop(1) below, which skips its
+                // replay because the page hasn't loaded yet at that point — here it has, or will
+                // load with the right value anyway.) Only an actual later toggle needs handling.
+                viewer.readerPreferences.panelByPanelBubbleStopsEnabled.changes().drop(1).collectLatest {
+                    try {
+                        val oldPanels = detectedPanels ?: return@collectLatest
+                        val oldFlatIndex = panelStopIndex
+                        val prefs = viewer.readerPreferences
+                        val oldShowIntro = prefs.panelByPanelShowFullPageIntro.get() && page.index == 0
+                        val oldShowOutro = prefs.panelByPanelShowFullPageOutro.get()
 
-                    val newPanels = expandForCurrentView(oldPanels.map { it.copy(subStops = emptyList()) }, viewer)
-                    detectedPanels = newPanels
-                    val newStops = newPanels.flattenToStops(showIntro = oldShowIntro, showOutro = oldShowOutro)
-                    val resumeIndex = newPanels.resumeIndexAfterReshape(
-                        oldFlatIndex = oldFlatIndex,
-                        oldPanels = oldPanels,
-                        oldShowIntro = oldShowIntro,
-                        oldShowOutro = oldShowOutro,
-                        newShowIntro = oldShowIntro,
-                        newShowOutro = oldShowOutro,
-                    )
-                    setPanelStops(newStops, anchorRect = newStops.getOrNull(resumeIndex))
+                        val newPanels = expandForCurrentView(oldPanels.map { it.copy(subStops = emptyList()) }, viewer)
+                        detectedPanels = newPanels
+                        val newStops = newPanels.flattenToStops(showIntro = oldShowIntro, showOutro = oldShowOutro)
+                        val resumeIndex = newPanels.resumeIndexAfterReshape(
+                            oldFlatIndex = oldFlatIndex,
+                            oldPanels = oldPanels,
+                            oldShowIntro = oldShowIntro,
+                            oldShowOutro = oldShowOutro,
+                            newShowIntro = oldShowIntro,
+                            newShowOutro = oldShowOutro,
+                        )
+                        setPanelStops(newStops, anchorRect = newStops.getOrNull(resumeIndex))
+                    } catch (e: Throwable) {
+                        logcat(LogPriority.ERROR, e) { "Bubble-stop re-expansion failed for page ${page.index}" }
+                    }
                 }
             }
             directionJob = scope.launch {
@@ -203,11 +214,18 @@ class PagerPageHolder(
             val viewModel = viewer.activity.viewModel
             viewModel.state.value.savedPanelStop?.let { saved ->
                 if (saved.pageIndex == page.index) {
-                    if (saved.anchorRect != null) {
-                        panelStopAnchorOverride = saved.anchorRect
-                    } else {
-                        panelStopIndexOverride = saved.stopIndex
-                    }
+                    // Both, deliberately — not one or the other. The anchor rect is the primary
+                    // restore key (a raw index isn't safe once the stop list can reshape with the
+                    // view's orientation), but setPanelStops also needs the exact saved index so it
+                    // can short-circuit when the list *didn't* reshape and panelStops[index] is
+                    // still that very rect. Without that exact-index path, the two identical
+                    // PanelRect.FULL_PAGE intro/outro brackets are a nearest-rect tie that always
+                    // resolves to the intro, so rotating on the outro reveal jumps back to stop 0.
+                    // anchorRect is still nullable (currentPanelStopRect() can return null if
+                    // detection hadn't produced stops yet when saving), in which case setPanelStops
+                    // falls through to the plain index override on its own.
+                    panelStopAnchorOverride = saved.anchorRect
+                    panelStopIndexOverride = saved.stopIndex
                 }
             }
             onPanelStopChanged = { index ->
@@ -411,8 +429,9 @@ class PagerPageHolder(
         forceFirstStop: Boolean = false,
     ) {
         val panels = viewer.panelDetector.detect(page, imageBytes, viewer.panelDirection)
-        detectedPanels = expandForCurrentView(panels, viewer)
-        val stops = detectedPanels!!.flattenToStops(
+        val expanded = expandForCurrentView(panels, viewer)
+        detectedPanels = expanded
+        val stops = expanded.flattenToStops(
             // Only the chapter's first page gets the reveal — showIntro isn't a "every page"
             // toggle, it's specifically for orienting the reader when a new chapter begins.
             showIntro = viewer.readerPreferences.panelByPanelShowFullPageIntro.get() && page.index == 0,
@@ -431,13 +450,49 @@ class PagerPageHolder(
      * holder, or the reactive toggle in [bubbleStopsJob]).
      */
     private suspend fun expandForCurrentView(panels: List<Panel>, viewer: PanelByPanelViewer): List<Panel> {
-        if (!viewer.readerPreferences.panelByPanelBubbleStopsEnabled().get()) return panels
+        if (!viewer.readerPreferences.panelByPanelBubbleStopsEnabled.get()) return panels
+        val (fitWidth, fitHeight) = aspectCorrectedViewport()
         return panels.map { panel ->
             val subStops = SpeechBubblePanelSubStopGenerator.generate(
-                panel, viewer.panelDirection, width, height,
+                panel, viewer.panelDirection, fitWidth, fitHeight,
             ) { null }
             panel.copy(subStops = subStops)
         }
+    }
+
+    /**
+     * This holder's viewport dimensions with the page's own decoded pixel aspect ratio folded in,
+     * for [SpeechBubblePanelSubStopGenerator]'s fit-quality check.
+     *
+     * That check compares a panel's *normalized* page-fraction aspect (`rect.width / rect.height`)
+     * against the viewport's aspect — but what the reader actually sees rendered is
+     * [ReaderPageImageView.panelStopTarget]'s `realAspect = (rect.width * sWidth) / (rect.height *
+     * sHeight)`, i.e. `normAspect * pageAspect` where `pageAspect = sWidth / sHeight`. Since
+     *
+     *     realAspect / viewportAspect
+     *       = normAspect * pageAspect / viewportAspect
+     *       = normAspect / (viewportAspect / pageAspect)
+     *
+     * handing the generator a viewport whose aspect is `viewportAspect / pageAspect` — i.e.
+     * `(width / height) * (sHeight / sWidth)`, which `width * sHeight` over `height * sWidth`
+     * expresses exactly — makes its own `normAspect / effectiveViewportAspect` algebraically
+     * identical to comparing the real rendered aspect against the real viewport. That keeps
+     * MIN_FIT_RATIO/MAX_FIT_RATIO meaningful to tune: without it their effect drifts with each
+     * series' scan aspect (a ~0.7-aspect portrait page skews the number one way, a wide spread the
+     * other), so a value tuned on one series would be wrong on another.
+     *
+     * Falls back to the raw view dimensions (the normalized-only comparison this shipped with)
+     * while the image hasn't decoded yet and [sourceImageSize] is still null — an approximation,
+     * but a safe one, versus guessing at a page aspect or refusing to expand at all.
+     */
+    private fun aspectCorrectedViewport(): Pair<Int, Int> {
+        val (sWidth, sHeight) = sourceImageSize() ?: return width to height
+        // Long products, then scaled back into Int range keeping the ratio: only the ratio is ever
+        // read, and a large page against a large view could otherwise overflow Int.
+        val effWidth = width.toLong() * sHeight
+        val effHeight = height.toLong() * sWidth
+        val shrink = (maxOf(effWidth, effHeight) / Int.MAX_VALUE) + 1
+        return (effWidth / shrink).toInt() to (effHeight / shrink).toInt()
     }
 
     /**

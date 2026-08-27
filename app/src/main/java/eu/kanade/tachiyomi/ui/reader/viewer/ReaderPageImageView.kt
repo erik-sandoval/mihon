@@ -496,9 +496,19 @@ open class ReaderPageImageView @JvmOverloads constructor(
     /**
      * Rotation-restore anchor, preferred over [panelStopIndexOverride] when present. A raw saved
      * index isn't safe once a page's stop list can reshape based on view orientation (see
-     * SpeechBubblePanelSubStopGenerator) — this stores the actual stop being read instead, resolved
-     * back to an index in the new (possibly differently-shaped) list via the same panel-aware
-     * grow/shrink rule used for the live preference-toggle case.
+     * SpeechBubblePanelSubStopGenerator) — this stores the actual stop being read instead.
+     *
+     * [PagerPageHolder] sets this *alongside* [panelStopIndexOverride], not instead of it, so
+     * [setPanelStops] can take an exact-index fast path (`panelStops[savedIndex] == anchor`) when
+     * the list didn't actually reshape, and only fall back to fuzzy nearest-rect matching when it
+     * did. The fast path matters because intro and outro brackets are both [PanelRect.FULL_PAGE]:
+     * nearest-rect alone is a tie between them that `minByOrNull` always breaks toward the intro,
+     * throwing a reader who rotated on the outro reveal back to the start of the page.
+     *
+     * Note this restore path resolves the anchor by rect distance, *not* by the panel-aware
+     * grow/shrink rule (`resumeIndexAfterReshape`) the live preference-toggle case uses — that
+     * rule needs the pre-rotation panel list's shape, which is gone by the time a brand new holder
+     * runs this. See the design spec's "Rotation-restore gap" section for why that gap is accepted.
      */
     var panelStopAnchorOverride: PanelRect? = null
 
@@ -1415,6 +1425,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
      */
     fun setPanelStops(stops: List<PanelRect>, anchorRect: PanelRect? = null, forceFirstStop: Boolean = false) {
         panelStops = stops.ifEmpty { listOf(PanelRect.FULL_PAGE) }
+        val anchorOverride = panelStopAnchorOverride
         panelStopIndex = when {
             // Removing the full-page override (see PanelFullPageOverrideRepository) is a fresh
             // entry into real panel detection, not a settings tweak on an already-open stop list —
@@ -1428,7 +1439,16 @@ open class ReaderPageImageView @JvmOverloads constructor(
             // for the page currently being read — land on whichever new stop covers roughly the
             // same content the reader was already looking at, instead of jumping to the entry stop.
             anchorRect != null -> nearestPanelStopIndex(anchorRect)
-            panelStopAnchorOverride != null -> nearestPanelStopIndex(panelStopAnchorOverride!!)
+            // Rotation restore (see panelStopAnchorOverride). Prefer the exact saved index when it
+            // still points at the very same rect — the stop list didn't reshape, so there's nothing
+            // to resolve fuzzily, and a fuzzy match here is actively wrong: intro and outro brackets
+            // are both PanelRect.FULL_PAGE, so nearestPanelStopIndex's minByOrNull always breaks
+            // that tie toward the intro (index 0) and dumps a reader who rotated on the outro reveal
+            // back at the start of the page. Nearest-rect is the fallback for the case this whole
+            // mechanism exists for: the list genuinely reshaped and the old index means nothing.
+            anchorOverride != null ->
+                panelStopIndexOverride?.takeIf { panelStops.getOrNull(it) == anchorOverride }
+                    ?: nearestPanelStopIndex(anchorOverride)
             else -> panelStopIndexOverride?.coerceIn(0, panelStops.lastIndex)
                 ?: if (panelStopsEnterForward) 0 else panelStops.lastIndex
         }
@@ -1448,6 +1468,24 @@ open class ReaderPageImageView @JvmOverloads constructor(
 
     /** The stop currently being read, so it can be passed back into [setPanelStops] as an anchor. */
     fun currentPanelStopRect(): PanelRect? = panelStops.getOrNull(panelStopIndex)
+
+    /**
+     * The decoded page image's real pixel dimensions (`sWidth` to `sHeight`), or `null` while the
+     * image isn't ready yet — `SubsamplingScaleImageView` reports both as 0 until then, and this
+     * collapses that to `null` rather than making every caller re-check.
+     *
+     * Exposed because a normalized page-fraction rect says nothing about its *rendered* shape
+     * without the page's own pixel aspect ratio: [panelStopTarget] already multiplies both in
+     * (`rect.width * sWidth` / `rect.height * sHeight`) to get the aspect actually shown on screen,
+     * and anything deciding "does this panel fit the screen" has to work from that same number, not
+     * from the normalized rect alone (see PagerPageHolder.expandForCurrentView).
+     */
+    internal fun sourceImageSize(): Pair<Int, Int>? {
+        val view = pageView as? SubsamplingScaleImageView ?: return null
+        val w = view.sWidth
+        val h = view.sHeight
+        return if (w > 0 && h > 0) w to h else null
+    }
 
     private fun nearestPanelStopIndex(anchor: PanelRect): Int = panelStops.indices.minByOrNull { i ->
         val s = panelStops[i]

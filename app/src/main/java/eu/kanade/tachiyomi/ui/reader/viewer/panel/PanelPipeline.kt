@@ -91,8 +91,7 @@ object PanelPipeline {
             var bottom = p.bottom + marginBottom(p, panels)
 
             for (b in bubbles) {
-                val owns = (b.centerX in p.left..p.right && b.centerY in p.top..p.bottom) ||
-                    (b in unclaimed && overlaps(p, b))
+                val owns = containsCenter(p, b) || (b in unclaimed && overlaps(p, b))
                 if (!owns) continue
                 val clearanceX = b.width * BUBBLE_CLEARANCE
                 val clearanceY = b.height * BUBBLE_CLEARANCE
@@ -107,7 +106,7 @@ object PanelPipeline {
     }
 
     private fun unclaimedBubbles(panels: List<PanelRect>, bubbles: List<PanelRect>): List<PanelRect> =
-        bubbles.filterNot { b -> panels.any { b.centerX in it.left..it.right && b.centerY in it.top..it.bottom } }
+        bubbles.filterNot { b -> panels.any { containsCenter(it, b) } }
 
     private fun overlaps(p: PanelRect, b: PanelRect) =
         b.left < p.right && b.right > p.left && b.top < p.bottom && b.bottom > p.top
@@ -236,17 +235,42 @@ object PanelPipeline {
     private fun horizontalOverlap(a: PanelRect, b: PanelRect) = a.left < b.right && b.left < a.right
 
     /**
-     * Attaches each bubble to whichever final panel's bounds contains its center (same
-     * containment test [pad] already uses for bubble-to-panel ownership), ordered per panel in
-     * natural reading order. A bubble that falls in the gutter between panels (no panel's bounds
-     * contains its center) is simply not attached to any panel — it's still shown when that
-     * panel's own bounds render (nothing is hidden), it just isn't its own stepping stop.
+     * Groups the detected bubbles under their owning final panel, each group ordered in natural
+     * reading order.
+     *
+     * Ownership is resolved globally, once, before grouping, and every bubble ends up owned by at
+     * most **one** panel: the first panel in list order whose bounds contain the bubble's centre.
+     * Enforcing that single ownership is the whole point of doing this as one pass rather than an
+     * independent per-panel filter. These are the *final* panels, i.e. post-[pad] — and [pad]
+     * deliberately grows *every* panel that overlaps a gutter-straddling bubble until it fully
+     * contains that bubble (see its [unclaimedBubbles] fallback), so after padding such a bubble's
+     * centre genuinely does land inside two adjacent panels' bounds. Attaching it to both would
+     * make the reader step through the same bubble twice: once near the end of one panel's bubble
+     * sequence, again at the start of the next.
+     *
+     * The tie-break is first-in-list-order purely because it's simple and deterministic; both
+     * panels show the bubble whole either way (that's what [pad] guaranteed), so which of the two
+     * gets the extra stepping stop is a wash. A bubble whose centre falls inside no panel at all
+     * is attached to none — nothing is hidden (whichever padded panel overlaps it still renders
+     * it), it just doesn't get its own stepping stop.
      */
     fun associateBubbles(panels: List<PanelRect>, bubbles: List<PanelRect>, rightToLeft: Boolean): List<Panel> {
-        return panels.map { panel ->
-            val owned = bubbles.filter { b -> b.centerX in panel.left..panel.right && b.centerY in panel.top..panel.bottom }
+        // -1 for a bubble no panel's bounds contain; that group is simply never read back below.
+        val bubblesByOwner = bubbles.groupBy { b -> panels.indexOfFirst { containsCenter(it, b) } }
+        return panels.mapIndexed { panelIndex, panel ->
+            val owned = bubblesByOwner[panelIndex].orEmpty()
+            // PanelOrdering.order's ROW_BAND is documented as a fraction of the *page* height, and
+            // these bubbles live inside one (typically much smaller) panel — so in its no-clean-cut
+            // fallback path it could in principle band two genuinely different bubble rows together.
+            // Considered and accepted for now: it only affects that fallback path, which is unlikely
+            // for the sparse, well-separated rects a typical bubble layout produces. Reworking
+            // PanelOrdering to take a local reference height is out of scope here.
             val ordered = if (owned.size > 1) PanelOrdering.order(owned, rightToLeft, isSpread = false) else owned
             Panel(bounds = panel, bubbles = ordered)
         }
     }
+
+    /** Shared bubble-to-panel ownership test: is [b]'s centre inside [p]'s bounds? */
+    private fun containsCenter(p: PanelRect, b: PanelRect) =
+        b.centerX in p.left..p.right && b.centerY in p.top..p.bottom
 }

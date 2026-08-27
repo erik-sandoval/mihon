@@ -14,12 +14,15 @@ import android.graphics.Bitmap
  * (docs/superpowers/specs/2026-08-26-guided-view-panel-fit-design.md) for why this must be a
  * hard, explicit guard rather than an incidental consequence of the fit-quality check below.
  *
- * The fit-quality check is a deliberate simplification versus [ReaderPageImageView]'s own
- * `panelStopTarget()` scale math, which also factors in the page's real pixel aspect ratio.
- * Using only the panel's own normalized aspect ratio against the viewport's avoids needing the
- * page's real decoded pixel dimensions plumbed through the (cached) detection pipeline for what
- * is fundamentally a "does this shape mismatch this orientation" question. It's also a
- * deliberately *different* question from `panelStopTarget()`'s own tall/narrow-panel cap: that
+ * The fit-quality check works purely in the panel's *normalized* page-fraction aspect ratio
+ * against whatever viewport it's handed. That only answers the right question if the caller folds
+ * the page's own decoded pixel aspect ratio into the viewport it passes in — which
+ * `PagerPageHolder.aspectCorrectedViewport()` does, making the comparison here algebraically
+ * identical to comparing [ReaderPageImageView]`.panelStopTarget()`'s real rendered
+ * `realAspect = (rect.width * sWidth) / (rect.height * sHeight)` against the real viewport. See
+ * that function's doc for the derivation; keeping the page's pixel dimensions out of *this* class
+ * is what lets it stay a pure function of already-cached, orientation-agnostic geometry. It is
+ * still a deliberately *different* question from `panelStopTarget()`'s own tall/narrow-panel cap: that
  * one exists because such a panel renders too large/dominant at fit-both-axes scale; this one
  * exists because a panel whose shape badly mismatches the viewport's own shape renders too
  * *small* on whichever axis binds the fit-scale, prompting rotation to get more room on that
@@ -41,6 +44,15 @@ object SpeechBubblePanelSubStopGenerator : PanelSubStopGenerator {
     private const val MIN_FIT_RATIO = 0.4f
     private const val MAX_FIT_RATIO = 2.5f
 
+    /**
+     * [direction] is intentionally unused: a panel's bubbles are already stored in reading order,
+     * baked in at association time by `PanelPipeline.associateBubbles` (which orders each panel's
+     * bubbles by the same direction). Re-ordering them here would be redundant at best and, if the
+     * two ever disagreed, a second source of truth — don't wire it up.
+     *
+     * [viewWidth]/[viewHeight] are expected to already have the page's own pixel aspect ratio
+     * folded in — see the class doc and `PagerPageHolder.aspectCorrectedViewport()`.
+     */
     override suspend fun generate(
         panel: Panel,
         direction: PanelDirection,
@@ -55,7 +67,11 @@ object SpeechBubblePanelSubStopGenerator : PanelSubStopGenerator {
     }
 
     private fun fitsCurrentOrientation(bounds: PanelRect, viewWidth: Int, viewHeight: Int): Boolean {
-        if (bounds.height <= 0f || viewHeight <= 0) return true
+        // Every degenerate input fails *closed* — "it fits", i.e. don't expand. viewWidth is part of
+        // that on purpose: a zero width with a non-zero height gives a viewport aspect of 0, so the
+        // mismatch ratio comes out Infinity and every panel with bubbles gets expanded, which is the
+        // wrong way to fail for a value that's only ever zero because the view isn't measured yet.
+        if (bounds.width <= 0f || bounds.height <= 0f || viewWidth <= 0 || viewHeight <= 0) return true
         val panelAspect = bounds.width / bounds.height
         val viewportAspect = viewWidth.toFloat() / viewHeight.toFloat()
         val mismatch = panelAspect / viewportAspect
