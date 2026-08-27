@@ -8,6 +8,9 @@ import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.MotionEvent
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
+import logcat.LogPriority
+import tachiyomi.core.common.util.system.logcat
+import java.util.concurrent.Executors
 import kotlin.math.abs
 import kotlin.math.min
 
@@ -21,6 +24,14 @@ import kotlin.math.min
  * 4. When zoomed in, panning and flinging are locked within the active panel rectangle (never exposes black void or other panels).
  * 5. High-velocity fling physics are pre-clamped to stop seamlessly at the panel barrier.
  * 6. Screen rotation (portrait <-> landscape) dynamically recalculates base scales and re-frames the active panel.
+ * 7. Panning (drag or fling, at any zoom level) never moves past the panel's own edge on either
+ *    axis, and an axis whose zoomed content already fits the viewport is locked to the panel's
+ *    center on that axis rather than drifting inside slack space it doesn't need (see
+ *    [clampAxis]) — enforced every frame in [onDraw] via [constrainPanLive], not just from touch
+ *    events, because the base view's own internal fling/momentum (confirmed against the library
+ *    source: it runs through the same per-frame [onDraw] animation-tick as the explicit
+ *    AnimationBuilder API, invalidating itself each frame) can keep moving the view for many
+ *    frames after the last ACTION_UP with no further onTouchEvent calls arriving.
  */
 class PanelSubsamplingImageView @JvmOverloads constructor(
     context: Context,
@@ -41,6 +52,37 @@ class PanelSubsamplingImageView @JvmOverloads constructor(
 
     init {
         setQuickScaleEnabled(false)
+        installDedicatedTileExecutor()
+    }
+
+    /**
+     * Reflectively replaces the base view's private `executor` field (confirmed against the
+     * library source: `private Executor executor = AsyncTask.THREAD_POOL_EXECUTOR`, with no
+     * public setter) with [dedicatedTileExecutor], a pool used only by
+     * [PanelSubsamplingImageView] instances. Panel-by-panel mode does much more aggressive,
+     * fast panning across a single high-res page than normal page browsing, which can burst many
+     * tile-decode requests at once — on the shared app-wide `AsyncTask.THREAD_POOL_EXECUTOR`,
+     * those queue behind whatever other unrelated AsyncTasks happen to be running elsewhere in
+     * the app at that moment. This doesn't make any individual tile decode faster (still
+     * CPU-bound native bitmap-region decoding) or eliminate contention between a page and its own
+     * preloaded neighbors, but it does stop *unrelated* background work from adding to the
+     * pop-in/pixelation window during a fast swipe.
+     *
+     * Best-effort: this is a private library internal with no supported API for it, so a failure
+     * here (e.g. a future library version renames or removes the field) silently falls back to
+     * the shared pool rather than crashing the reader over a decode-latency optimization.
+     */
+    private fun installDedicatedTileExecutor() {
+        try {
+            val field = SubsamplingScaleImageView::class.java.getDeclaredField("executor")
+            field.isAccessible = true
+            field.set(this, dedicatedTileExecutor)
+        } catch (e: ReflectiveOperationException) {
+            logcat(LogPriority.WARN) {
+                "PanelSubsamplingImageView: couldn't install dedicated tile executor, " +
+                    "falling back to the shared pool: $e"
+            }
+        }
     }
 
     private val panelFlingDetector = GestureDetector(context, object : GestureDetector.SimpleOnGestureListener() {
@@ -58,8 +100,6 @@ class PanelSubsamplingImageView @JvmOverloads constructor(
             val pRight = rect.right * sWidth
             val pTop = rect.top * sHeight
             val pBottom = rect.bottom * sHeight
-            val pWidth = pRight - pLeft
-            val pHeight = pBottom - pTop
 
             val currentCenter = center ?: return false
             val vTranslateEnd = PointF(
@@ -69,17 +109,8 @@ class PanelSubsamplingImageView @JvmOverloads constructor(
             val rawCenterXEnd = ((width / 2f) - vTranslateEnd.x) / s
             val rawCenterYEnd = ((height / 2f) - vTranslateEnd.y) / s
 
-            val targetCenterX = if (vW >= pWidth) {
-                (pLeft + pRight) / 2f
-            } else {
-                rawCenterXEnd.coerceIn(pLeft + vW / 2f, pRight - vW / 2f)
-            }
-
-            val targetCenterY = if (vH >= pHeight) {
-                (pTop + pBottom) / 2f
-            } else {
-                rawCenterYEnd.coerceIn(pTop + vH / 2f, pBottom - vH / 2f)
-            }
+            val targetCenterX = clampAxis(rawCenterXEnd, vW, pLeft, pRight)
+            val targetCenterY = clampAxis(rawCenterYEnd, vH, pTop, pBottom)
 
             animateCenter(PointF(targetCenterX, targetCenterY))
                 ?.withEasing(EASE_OUT_QUAD)
@@ -183,6 +214,26 @@ class PanelSubsamplingImageView @JvmOverloads constructor(
         return targetScale to center
     }
 
+    override fun onDraw(canvas: Canvas) {
+        // Catches every source of motion uniformly — touch-driven pan, our own panelFlingDetector,
+        // and (the gap the onTouchEvent-only correction missed) the base view's own internal
+        // fling/momentum, which keeps calling onDraw + invalidate() on its own for many frames
+        // after the last real touch event.
+        //
+        // Must run BEFORE super.onDraw, not after: confirmed against the library source,
+        // setScaleAndCenter nulls its internal 'anim' and stages the position as pending, which
+        // onDraw's own animation-tick block (skipped once anim is null) would otherwise apply —
+        // i.e. the correction only actually reaches this frame's painted tiles if it lands before
+        // super.onDraw runs. Correcting after (the first attempt here) left the image itself
+        // painted one frame behind, while PanelSpotlightOverlay — a sibling view that reads this
+        // view's live scale/center fresh in its own onDraw, later in the same traversal — used the
+        // already-corrected value immediately, so the overlay visibly led the image during a fling.
+        if (activePanelRect != null && isReady && !isProgrammaticAnimating) {
+            constrainPanLive()
+        }
+        super.onDraw(canvas)
+    }
+
     override fun onTouchEvent(event: MotionEvent): Boolean {
         if (isProgrammaticAnimating) {
             return true
@@ -244,11 +295,66 @@ class PanelSubsamplingImageView @JvmOverloads constructor(
 
         val handled = super.onTouchEvent(event)
         if (activePanelRect != null && isReady && !isProgrammaticAnimating) {
+            // The base view computes pan as an offset from the ACTION_DOWN touch point (not
+            // incrementally frame-to-frame — confirmed against the library source), so correcting
+            // the center back here on every move/up/cancel is safe: it can never fight or desync
+            // from the library's own next-frame calculation, which is independent of this
+            // correction. Must also run on ACTION_UP/CANCEL, not just MOVE — the terminating event
+            // carries its own (possibly slightly off-axis) touch position, and leaving it
+            // uncorrected here meant clampToPanelBounds' animated settle pass right below had a
+            // real gap to close, which read as an unwanted little vertical "fling" on release.
+            when (event.actionMasked) {
+                MotionEvent.ACTION_MOVE, MotionEvent.ACTION_UP, MotionEvent.ACTION_CANCEL -> constrainPanLive()
+            }
             if (event.actionMasked == MotionEvent.ACTION_UP || event.actionMasked == MotionEvent.ACTION_CANCEL) {
                 clampToPanelBounds()
             }
         }
         return handled
+    }
+
+    /**
+     * Clamps the live center into the active panel's range on each axis independently (see
+     * [clampAxis]), applied instantly (no animation) so it tracks the finger 1:1 during a drag or
+     * pinch — see the class kdoc. Called after every touch move/up/cancel, before
+     * [clampToPanelBounds]' own settle pass, so a plain release finds nothing left to correct.
+     */
+    private fun constrainPanLive() {
+        if (panelBaseScale <= 0f) return
+        val rect = activePanelRect ?: return
+        if (sWidth <= 0 || sHeight <= 0 || width <= 0 || height <= 0) return
+        val s = scale
+        if (s <= 0f || s.isNaN()) return
+        val currentCenter = center ?: return
+        if (currentCenter.x.isNaN() || currentCenter.y.isNaN()) return
+
+        val vW = width.toFloat() / s
+        val vH = height.toFloat() / s
+        val targetX = clampAxis(currentCenter.x, vW, rect.left * sWidth, rect.right * sWidth)
+        val targetY = clampAxis(currentCenter.y, vH, rect.top * sHeight, rect.bottom * sHeight)
+
+        if (abs(targetX - currentCenter.x) > 0.5f || abs(targetY - currentCenter.y) > 0.5f) {
+            setScaleAndCenter(s, PointF(targetX, targetY))
+        }
+    }
+
+    /**
+     * The clamped center for one axis: if the viewport is already at least as large as the
+     * panel's extent on this axis (zoomed content fits, nothing to pan into), locks to the
+     * panel's own center on that axis; otherwise keeps [current] as-is unless it would show past
+     * the panel's edge, in which case it's pulled back to the nearest in-bounds position. Shared
+     * by [constrainPanLive], [clampToPanelBounds], and the fling handler so X and Y — and live
+     * drag, settle, and fling — can never disagree on where an axis's edge actually is.
+     */
+    private fun clampAxis(current: Float, viewportSize: Float, panelMin: Float, panelMax: Float): Float {
+        val panelSize = panelMax - panelMin
+        return if (viewportSize >= panelSize) {
+            (panelMin + panelMax) / 2f
+        } else {
+            val lo = minOf(panelMin + viewportSize / 2f, panelMax - viewportSize / 2f)
+            val hi = maxOf(panelMin + viewportSize / 2f, panelMax - viewportSize / 2f)
+            current.coerceIn(lo, hi)
+        }
     }
 
     fun clampToPanelBounds() {
@@ -265,31 +371,11 @@ class PanelSubsamplingImageView @JvmOverloads constructor(
         val vW = width.toFloat() / clampedScale
         val vH = height.toFloat() / clampedScale
 
-        val pLeft = rect.left * sWidth
-        val pRight = rect.right * sWidth
-        val pTop = rect.top * sHeight
-        val pBottom = rect.bottom * sHeight
-        val pWidth = pRight - pLeft
-        val pHeight = pBottom - pTop
-
         val currentCenter = center ?: return
         if (currentCenter.x.isNaN() || currentCenter.y.isNaN()) return
 
-        val targetCenterX = if (vW >= pWidth) {
-            (pLeft + pRight) / 2f
-        } else {
-            val minX = minOf(pLeft + vW / 2f, pRight - vW / 2f)
-            val maxX = maxOf(pLeft + vW / 2f, pRight - vW / 2f)
-            currentCenter.x.coerceIn(minX, maxX)
-        }
-
-        val targetCenterY = if (vH >= pHeight) {
-            (pTop + pBottom) / 2f
-        } else {
-            val minY = minOf(pTop + vH / 2f, pBottom - vH / 2f)
-            val maxY = maxOf(pTop + vH / 2f, pBottom - vH / 2f)
-            currentCenter.y.coerceIn(minY, maxY)
-        }
+        val targetCenterX = clampAxis(currentCenter.x, vW, rect.left * sWidth, rect.right * sWidth)
+        val targetCenterY = clampAxis(currentCenter.y, vH, rect.top * sHeight, rect.bottom * sHeight)
 
         val scaleDiff = abs(clampedScale - s)
         val xDiff = abs(targetCenterX - currentCenter.x)
@@ -311,5 +397,13 @@ class PanelSubsamplingImageView @JvmOverloads constructor(
         private const val TALL_PANEL_ASPECT_THRESHOLD = 0.5f
         private const val MAX_TALL_PANEL_HEIGHT_FRACTION = 0.6f
         private const val LANDSCAPE_MAX_FILL_FRACTION = 0.92f
+
+        // Shared across every PanelSubsamplingImageView instance (the current page and any
+        // preloaded neighbors), not one pool per view — tile decoding is CPU-bound, so one pool
+        // sized to the device's core count avoids oversubscribing regardless of how many panel
+        // views exist at once. See installDedicatedTileExecutor's kdoc for why this exists at all.
+        private val dedicatedTileExecutor = Executors.newFixedThreadPool(
+            Runtime.getRuntime().availableProcessors().coerceAtLeast(2),
+        )
     }
 }

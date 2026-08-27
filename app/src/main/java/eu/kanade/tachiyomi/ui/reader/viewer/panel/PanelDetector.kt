@@ -109,7 +109,14 @@ class PanelDetector(
     companion object {
         private const val DETECTION_BUDGET_MS = 2000L
         private const val MAX_DETECTION_DIMENSION = 900
-        // 50: Increased head clearance above straddling speech bubbles for full character portraits.
-        private const val DETECTOR_VERSION = 50
+        // 50: (Externally added, later reverted) speech-bubble boundary alignment in PanelPipeline.
+        // 51: Evidence-gathering bump only (forced fresh detection to capture logcat for a specific bug).
+        // 52: Reverted alignBoundariesToSpeechBubbles (PanelPipeline.kt) and consolidateFragments
+        //     (YoloPanelDecoder.kt) back to the original pipeline — confirmed on real pages
+        //     (Blue Lock ch.1 p7/p11/p17) that alignBoundariesToSpeechBubbles misclassified two
+        //     side-by-side full-height columns as a stacked pair and used a bubble from one column
+        //     to slice a chunk off the bottom of the other, and consolidateFragments over-merged
+        //     distinct panels (2 pre-existing regression tests failed against it).
+        private const val DETECTOR_VERSION = 52
     }
 }

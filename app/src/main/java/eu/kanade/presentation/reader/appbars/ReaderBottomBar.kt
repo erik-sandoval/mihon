@@ -29,6 +29,8 @@ fun ReaderBottomBar(
     modifier: Modifier = Modifier,
     isPanelByPanel: Boolean = false,
     onClickPageGrid: () -> Unit = {},
+    upscalingEnabled: Boolean = false,
+    onClickToggleUpscaling: () -> Unit = {},
 ) {
     Row(
         modifier = modifier
@@ -64,6 +66,13 @@ fun ReaderBottomBar(
                     contentDescription = stringResource(MR.strings.pref_crop_borders),
                 )
             }
+        }
+
+        IconButton(onClick = onClickToggleUpscaling) {
+            Icon(
+                painter = painterResource(if (upscalingEnabled) R.drawable.ic_upscale_24dp else R.drawable.ic_upscale_off_24dp),
+                contentDescription = stringResource(MR.strings.reader_image_enhancement),
+            )
         }
 
         IconButton(onClick = onClickSettings) {

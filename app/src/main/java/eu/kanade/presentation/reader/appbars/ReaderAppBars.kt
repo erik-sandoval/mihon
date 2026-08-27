@@ -76,6 +76,8 @@ fun ReaderAppBars(
     onClickSettings: () -> Unit,
     isPanelByPanel: Boolean = false,
     onClickPageGrid: () -> Unit = {},
+    upscalingEnabled: Boolean = false,
+    onClickToggleUpscaling: () -> Unit = {},
 ) {
     val backgroundColor = MaterialTheme.colorScheme
         .surfaceColorAtElevation(3.dp)
@@ -177,6 +179,8 @@ fun ReaderAppBars(
                     onClickSettings = onClickSettings,
                     isPanelByPanel = isPanelByPanel,
                     onClickPageGrid = onClickPageGrid,
+                    upscalingEnabled = upscalingEnabled,
+                    onClickToggleUpscaling = onClickToggleUpscaling,
                 )
             }
         }

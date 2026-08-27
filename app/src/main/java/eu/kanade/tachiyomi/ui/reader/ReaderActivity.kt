@@ -55,6 +55,7 @@ import com.hippo.unifile.UniFile
 import dev.zacsweers.metro.Inject
 import eu.kanade.core.util.ifSourcesLoaded
 import eu.kanade.domain.base.BasePreferences
+import eu.kanade.domain.manga.model.upscaleEnabledOverride
 import eu.kanade.presentation.reader.DisplayRefreshHost
 import eu.kanade.presentation.reader.OrientationSelectDialog
 import eu.kanade.presentation.reader.PanelPageGridSheet
@@ -82,6 +83,8 @@ import eu.kanade.tachiyomi.ui.reader.setting.ReaderOrientation
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderSettingsViewModel
 import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
+import eu.kanade.tachiyomi.ui.reader.setting.UpscaleEnabledOverride
+import eu.kanade.tachiyomi.ui.reader.setting.resolve
 import eu.kanade.tachiyomi.ui.reader.viewer.ReaderProgressIndicator
 import eu.kanade.tachiyomi.ui.reader.viewer.pager.PanelByPanelViewer
 import eu.kanade.tachiyomi.ui.reader.viewer.pager.R2LPagerViewer
@@ -703,6 +706,14 @@ class ReaderActivity : BaseActivity() {
         )
         val verticalNavigatorOnLeft by readerPreferences.verticalNavigatorOnLeft.collectAsState()
         val verticalNavigatorHeight by readerPreferences.verticalNavigatorHeight.collectAsState()
+        val globalUpscalingEnabled by readerPreferences.realCuganEnabled().collectAsState()
+        // The effective state for THIS series, not just the global fallback — a series with its
+        // own override (set via Custom Filter > Image upscaling, same as here) ignores the global
+        // pref entirely, so a toolbar toggle that only touched the global pref silently did
+        // nothing for any series already carrying an override. See setMangaUpscaleEnabledOverride's
+        // kdoc for why this must stay a per-series override write, never a bundled/global one.
+        val upscalingEnabled = (state.manga?.upscaleEnabledOverride ?: UpscaleEnabledOverride.DEFAULT)
+            .resolve(globalUpscalingEnabled)
 
         ReaderAppBars(
             visible = state.menuVisible,
@@ -762,6 +773,13 @@ class ReaderActivity : BaseActivity() {
             onClickSettings = viewModel::openSettingsDialog,
             isPanelByPanel = state.viewer is PanelByPanelViewer,
             onClickPageGrid = viewModel::openPageGridDialog,
+            upscalingEnabled = upscalingEnabled,
+            onClickToggleUpscaling = {
+                val newOverride = if (upscalingEnabled) UpscaleEnabledOverride.DISABLED else UpscaleEnabledOverride.ENABLED
+                viewModel.setMangaUpscaleEnabledOverride(newOverride)
+                menuToggleToast?.cancel()
+                menuToggleToast = toast(if (newOverride == UpscaleEnabledOverride.ENABLED) MR.strings.on else MR.strings.off)
+            },
         )
     }
 
