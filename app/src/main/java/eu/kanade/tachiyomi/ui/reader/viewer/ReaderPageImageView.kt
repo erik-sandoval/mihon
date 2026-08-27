@@ -313,7 +313,7 @@ open class ReaderPageImageView @JvmOverloads constructor(
         // Debounced internally to run at most once every few minutes; cheap and safe to call
         // from every view instance.
         viewScope.launchIO {
-            ImageEnhancementCache.checkAndTrim(context)
+            ImageEnhancementCache.checkAndTrim(context, preferences.aiImageCacheMaxSizeMb().get())
         }
 
         // realCuganPerformanceMode/realCuganTileSize are NOT view-specific — they only ever

@@ -292,6 +292,12 @@ class ReaderPreferences(
 
     fun realCuganSkipMaxSizeHeight() = preferenceStore.getInt("pref_realcugan_skip_max_size_height", 0)
 
+    /** Max on-disk size, in MB, of [eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache] before [eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache.checkAndTrim] starts evicting the oldest entries. 0 = unlimited. */
+    fun aiImageCacheMaxSizeMb() = preferenceStore.getInt("pref_ai_image_cache_max_size_mb", 3072)
+
+    /** Whether a chapter's enhanced-image cache entries are deleted as soon as that chapter is marked read. */
+    fun clearAiImageCacheOnChapterRead() = preferenceStore.getBoolean("pref_clear_ai_image_cache_on_chapter_read", false)
+
     fun realCuganShowStatus() = preferenceStore.getBoolean("pref_realcugan_show_status", false)
 
     // endregion

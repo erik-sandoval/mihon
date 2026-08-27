@@ -3,6 +3,8 @@ package eu.kanade.tachiyomi.util.waifu2x
 import android.content.Context
 import android.graphics.Bitmap
 import android.os.Build
+import android.text.format.Formatter
+import eu.kanade.tachiyomi.util.storage.DiskUtil
 import java.io.File
 import java.io.FileOutputStream
 import java.util.concurrent.ConcurrentHashMap
@@ -20,7 +22,6 @@ object ImageEnhancementCache {
     private const val CACHE_DIR_NAME = "realcugan_cache"
     private const val PHOTO_NPU_INT8_CACHE_REVISION = 4
     private const val REAL_CUGAN_NPU_INT8_CACHE_REVISION = 1
-    private const val MAX_CACHE_SIZE = 3L * 1024 * 1024 * 1024 // 3GB
 
     // Bump whenever a native-side change to waifu2x.cpp/anime4k.cpp alters output for
     // already-cached pages (tile size, padding, precision defaults, etc.) — mirrors
@@ -288,6 +289,17 @@ object ImageEnhancementCache {
         cacheDir?.mkdirs()
     }
 
+    /**
+     * Current on-disk size of the enhanced-image cache, in human-readable form — mirrors
+     * [eu.kanade.tachiyomi.data.cache.ChapterCache.readableSize]'s pattern for the same
+     * "Storage Usage" settings screen.
+     */
+    fun readableSize(context: Context): String {
+        init(context)
+        val size = cacheDir?.let { DiskUtil.getDirectorySize(it) } ?: 0L
+        return Formatter.formatFileSize(context, size)
+    }
+
     private fun pendingSaveKey(mangaId: Long, chapterId: Long, pageIndex: Int, pageVariant: String): String {
         return "${mangaId}_${chapterId}_${pageIndex}_$pageVariant"
     }
@@ -369,29 +381,33 @@ object ImageEnhancementCache {
     }
 
     /**
-     * Check cache size and trim if it exceeds limit (3GB)
-     * Should be called from background thread
+     * Check cache size and trim if it exceeds [maxSizeMb] (user-configurable, see
+     * [eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences.aiImageCacheMaxSizeMb]). A
+     * [maxSizeMb] of 0 disables trimming entirely — should be called from a background thread.
      */
-    fun checkAndTrim(context: Context) {
+    fun checkAndTrim(context: Context, maxSizeMb: Int) {
+        if (maxSizeMb <= 0) return
+
         // Debounce: only check once every 10 minutes
         if (System.currentTimeMillis() - lastTrimTime < 10 * 60 * 1000) return
         lastTrimTime = System.currentTimeMillis()
 
         init(context)
         val dir = cacheDir ?: return
-        
+        val maxSizeBytes = maxSizeMb * 1024L * 1024L
+
         try {
             var size = dir.walkTopDown().filter { it.isFile }.map { it.length() }.sum()
-            if (size > MAX_CACHE_SIZE) {
-                android.util.Log.d("ImageEnhancementCache", "Cache size ${size / 1024 / 1024}MB > 3GB, trimming...")
-                
+            if (size > maxSizeBytes) {
+                android.util.Log.d("ImageEnhancementCache", "Cache size ${size / 1024 / 1024}MB > ${maxSizeMb}MB, trimming...")
+
                 // Get all files sorted by last modified (oldest first)
                 val files = dir.walkTopDown()
                     .filter { it.isFile }
                     .sortedBy { it.lastModified() }
                     .iterator()
-                
-                while (files.hasNext() && size > MAX_CACHE_SIZE * 0.9) { // Trim to 90%
+
+                while (files.hasNext() && size > maxSizeBytes * 0.9) { // Trim to 90%
                     val file = files.next()
                     val len = file.length()
                     if (file.delete()) {

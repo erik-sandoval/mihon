@@ -496,13 +496,11 @@
     <string name="pref_panel_by_panel_show_full_page_intro">Show full page at chapter start</string>
     <string name="pref_panel_by_panel_show_full_page_outro">Show full page after panels</string>
     <string name="pref_panel_by_panel_overlay_opacity">Panel overlay opacity</string>
-    <string name="action_clear_panel_cache">Clear panel detection cache</string>
     <string name="pref_panel_by_panel_show_debug_order">Show panel order overlay</string>
     <string name="action_show_full_page">Show full\npage</string>
     <string name="action_show_panels_again">Show panels\nagain</string>
     <string name="action_show_panel_order">Show panel\norder</string>
     <string name="action_hide_panel_order">Hide panel\norder</string>
-    <string name="panel_cache_cleared">Panel detection cache cleared</string>
     <string name="action_page_grid">Page grid</string>
     <string name="pager_viewer">Paged</string>
     <string name="pref_viewer_nav">Tap zones</string>
@@ -659,6 +657,11 @@
     <string name="cache_deleted">Cache cleared, %1$d files deleted</string>
     <string name="cache_delete_error">Error occurred while clearing</string>
     <string name="pref_auto_clear_chapter_cache">Clear chapter cache on app launch</string>
+    <string name="pref_clear_ai_image_cache">Clear AI-upscaled image cache</string>
+    <string name="ai_image_cache_deleted">AI-upscaled image cache cleared</string>
+    <string name="pref_ai_image_cache_max_size">Max AI-upscaled image cache size</string>
+    <string name="pref_clear_ai_image_cache_on_chapter_read">Clear AI-upscaled image cache after chapter is read</string>
+    <string name="unlimited">Unlimited</string>
     <string name="export">Export</string>
     <string name="library_list">Library List</string>
     <string name="library_exported">Library Exported</string>

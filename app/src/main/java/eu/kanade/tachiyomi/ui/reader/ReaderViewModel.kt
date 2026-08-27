@@ -55,6 +55,7 @@ import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
 import eu.kanade.tachiyomi.util.chapter.filterDownloaded
 import eu.kanade.tachiyomi.util.chapter.removeDuplicates
 import eu.kanade.tachiyomi.util.editCover
+import eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache
 import eu.kanade.tachiyomi.util.lang.byteSize
 import eu.kanade.tachiyomi.util.storage.DiskUtil
 import eu.kanade.tachiyomi.util.storage.cacheImageDir
@@ -571,6 +572,20 @@ class ReaderViewModel(
     }
 
     /**
+     * Deletes [currentChapter]'s enhanced-image cache entries as soon as it's marked read, if the
+     * user has [ReaderPreferences.clearAiImageCacheOnChapterRead] enabled. Skipped for incognito
+     * reading for the same reason [ImageDecoder]/[PanelDetector] skip their own cache writes there
+     * — nothing about an incognito session should leave anything behind to clean up in the first
+     * place.
+     */
+    private fun clearAiImageCacheIfNeeded(currentChapter: ReaderChapter) {
+        if (incognitoMode || !readerPreferences.clearAiImageCacheOnChapterRead().get()) return
+        val mangaId = manga?.id ?: return
+        val chapterId = currentChapter.chapter.id ?: return
+        ImageEnhancementCache.clearChapterCache(mangaId, chapterId)
+    }
+
+    /**
      * Saves the chapter progress (last read page and whether it's read)
      * if incognito mode isn't on.
      */
@@ -604,6 +619,7 @@ class ReaderViewModel(
         readerChapter.chapter.read = true
         updateTrackChapterRead(readerChapter)
         deleteChapterIfNeeded(readerChapter)
+        clearAiImageCacheIfNeeded(readerChapter)
 
         val markDuplicateAsRead = libraryPreferences.markDuplicateReadChapterAsRead.get()
             .contains(LibraryPreferences.MARK_DUPLICATE_CHAPTER_READ_EXISTING)

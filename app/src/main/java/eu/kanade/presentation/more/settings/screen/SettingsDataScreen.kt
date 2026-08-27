@@ -56,6 +56,7 @@ import eu.kanade.tachiyomi.data.export.LibraryExporter.ExportOptions
 import eu.kanade.tachiyomi.util.system.DeviceUtil
 import eu.kanade.tachiyomi.util.system.toast
 import eu.kanade.tachiyomi.util.system.workManager
+import eu.kanade.tachiyomi.util.waifu2x.ImageEnhancementCache
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 import logcat.LogPriority
@@ -278,10 +279,16 @@ object SettingsDataScreen : SearchableSettings {
         val context = LocalContext.current
         val scope = rememberCoroutineScope()
         val libraryPreferences = remember { context.appGraph.libraryPreferences }
+        val readerPreferences = remember { context.appGraph.readerPreferences }
 
         val chapterCache = remember { context.appGraph.chapterCache }
         var cacheReadableSizeSema by remember { mutableIntStateOf(0) }
         val cacheReadableSize = remember(cacheReadableSizeSema) { chapterCache.readableSize }
+
+        var aiImageCacheReadableSizeSema by remember { mutableIntStateOf(0) }
+        val aiImageCacheReadableSize = remember(aiImageCacheReadableSizeSema) {
+            ImageEnhancementCache.readableSize(context)
+        }
 
         return Preference.PreferenceGroup(
             title = stringResource(MR.strings.pref_storage_usage),
@@ -319,6 +326,42 @@ object SettingsDataScreen : SearchableSettings {
                 Preference.PreferenceItem.SwitchPreference(
                     preference = libraryPreferences.autoClearChapterCache,
                     title = stringResource(MR.strings.pref_auto_clear_chapter_cache),
+                ),
+
+                Preference.PreferenceItem.TextPreference(
+                    title = stringResource(MR.strings.pref_clear_ai_image_cache),
+                    subtitle = stringResource(MR.strings.used_cache, aiImageCacheReadableSize),
+                    onClick = {
+                        scope.launchNonCancellable {
+                            try {
+                                ImageEnhancementCache.clear(context)
+                                withUIContext {
+                                    context.toast(MR.strings.ai_image_cache_deleted)
+                                    aiImageCacheReadableSizeSema++
+                                }
+                            } catch (e: Throwable) {
+                                logcat(LogPriority.ERROR, e)
+                                withUIContext { context.toast(MR.strings.cache_delete_error) }
+                            }
+                        }
+                    },
+                ),
+                Preference.PreferenceItem.ListPreference(
+                    preference = readerPreferences.aiImageCacheMaxSizeMb(),
+                    title = stringResource(MR.strings.pref_ai_image_cache_max_size),
+                    entries = mapOf(
+                        0 to stringResource(MR.strings.unlimited),
+                        512 to "512 MB",
+                        1024 to "1 GB",
+                        2048 to "2 GB",
+                        3072 to "3 GB",
+                        5120 to "5 GB",
+                        10240 to "10 GB",
+                    ),
+                ),
+                Preference.PreferenceItem.SwitchPreference(
+                    preference = readerPreferences.clearAiImageCacheOnChapterRead(),
+                    title = stringResource(MR.strings.pref_clear_ai_image_cache_on_chapter_read),
                 ),
             ),
         )
