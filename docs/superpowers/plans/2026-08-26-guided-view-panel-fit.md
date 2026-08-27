@@ -659,7 +659,7 @@ fun List<Panel>.resumeIndexAfterReshape(
     val oldStopsForOwner = oldPanels[ownerPanelIndex].subStops.ifEmpty { listOf(oldPanels[ownerPanelIndex].bounds) }
     val oldAnchorRect = run {
         val cursorStart = (if (oldShowIntro) 1 else 0) +
-            oldPanels.take(ownerPanelIndex).sumOf { it.subStops.ifEmpty { l -> listOf(it.bounds) }.size }
+            oldPanels.take(ownerPanelIndex).sumOf { it.subStops.ifEmpty { listOf(it.bounds) }.size }
         oldStopsForOwner[oldFlatIndex - cursorStart]
     }
 
