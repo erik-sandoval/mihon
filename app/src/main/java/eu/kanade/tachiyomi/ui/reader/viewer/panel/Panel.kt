@@ -136,7 +136,18 @@ fun List<Panel>.resumeIndexAfterReshape(
     newShowOutro: Boolean,
 ): Int {
     val ownerPanelIndex = oldPanels.panelIndexForFlatStop(oldFlatIndex, oldShowIntro, oldShowOutro)
-        ?: return 0
+    if (ownerPanelIndex == null) {
+        // oldFlatIndex was an intro/outro bracket (panelIndexForFlatStop already special-cases
+        // the single-full-page-fallback page, so reaching here means a real bracket, not that).
+        // Both brackets are the identical PanelRect.FULL_PAGE rect, so which one it actually was
+        // can only be told from the index itself: the intro is always flat index 0, the outro is
+        // always the old list's last flat index.
+        val oldTotalStops = (if (oldShowIntro) 1 else 0) +
+            oldPanels.stopsPerPanel().sumOf { it.size } +
+            (if (oldShowOutro) 1 else 0)
+        val wasOutroBracket = oldShowOutro && oldFlatIndex == oldTotalStops - 1
+        return if (wasOutroBracket) flattenToStops(newShowIntro, newShowOutro).lastIndex else 0
+    }
     val oldStopsForOwner = oldPanels.stopsPerPanel()[ownerPanelIndex]
     val oldCursorStart = oldPanels.cursorStartForPanel(ownerPanelIndex, oldShowIntro)
     val oldAnchorRect = oldStopsForOwner[oldFlatIndex - oldCursorStart]

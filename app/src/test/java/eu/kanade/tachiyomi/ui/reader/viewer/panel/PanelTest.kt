@@ -202,4 +202,58 @@ class PanelTest {
 
         assertEquals(0, resumeIndex)
     }
+
+    @Test
+    fun `resumeIndexAfterReshape resumes at the new list's last stop when the old position was the outro bracket`() {
+        // A page with a real panel, both intro and outro enabled: [FULL_PAGE, panel, FULL_PAGE].
+        // Bounds is deliberately NOT PanelRect.FULL_PAGE (0,0,1,1) — that exact rect would
+        // structurally equal the no-panels-detected fallback sentinel and trip the unrelated
+        // isSingleFullPageFallback special case instead of the real bracket path this test means
+        // to exercise. Toggling a preference (or rotating) while on the trailing outro reveal must
+        // not bounce the reader back to the very start of the page — only the intro bracket should
+        // resume at 0; the outro should resume at the new list's own last valid index.
+        val oldPanels = listOf(Panel(bounds = PanelRect(0f, 0f, 1f, 0.9f)))
+        val newPanels = listOf(
+            Panel(
+                bounds = PanelRect(0f, 0f, 1f, 0.9f),
+                subStops = listOf(PanelRect(0.05f, 0.05f, 0.25f, 0.15f), PanelRect(0f, 0f, 1f, 0.9f)),
+            ),
+        )
+        // Old flattened: [FULL_PAGE(intro), panel.bounds, FULL_PAGE(outro)] — oldFlatIndex 2 is the outro.
+
+        val resumeIndex = newPanels.resumeIndexAfterReshape(
+            oldFlatIndex = 2,
+            oldPanels = oldPanels,
+            oldShowIntro = true,
+            oldShowOutro = true,
+            newShowIntro = true,
+            newShowOutro = true,
+        )
+
+        // New flattened: [FULL_PAGE(intro), bubble, panel.bounds, FULL_PAGE(outro)] — last index is 3.
+        assertEquals(3, resumeIndex)
+    }
+
+    @Test
+    fun `resumeIndexAfterReshape still resumes at 0 when the old position was the intro bracket`() {
+        // Same non-FULL_PAGE bounds caveat as the outro test above.
+        val oldPanels = listOf(Panel(bounds = PanelRect(0f, 0f, 1f, 0.9f)))
+        val newPanels = listOf(
+            Panel(
+                bounds = PanelRect(0f, 0f, 1f, 0.9f),
+                subStops = listOf(PanelRect(0.05f, 0.05f, 0.25f, 0.15f), PanelRect(0f, 0f, 1f, 0.9f)),
+            ),
+        )
+
+        val resumeIndex = newPanels.resumeIndexAfterReshape(
+            oldFlatIndex = 0,
+            oldPanels = oldPanels,
+            oldShowIntro = true,
+            oldShowOutro = true,
+            newShowIntro = true,
+            newShowOutro = true,
+        )
+
+        assertEquals(0, resumeIndex)
+    }
 }

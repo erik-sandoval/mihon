@@ -64,4 +64,35 @@ class SpeechBubblePanelSubStopGeneratorTest {
 
         assertEquals(listOf(bubble1, bubble2, panel.bounds), stops)
     }
+
+    @Test
+    fun `fit decision depends on the page's real pixel aspect ratio, not just the raw viewport`() = runTest {
+        // A panel at normalized aspect 0.5 (width 0.5, height 1.0) on a portrait phone
+        // (1080x2400, aspect 0.45) — comparing the panel directly against the raw viewport says
+        // "fits" (0.5 / 0.45 ~= 1.11, inside [0.4, 2.5]). But the source page here is an unusually
+        // wide scan (sWidth=4000, sHeight=1600, aspect 2.5) — the panel's real *rendered* aspect
+        // is what panelStopTarget() actually scales against, and PagerPageHolder.
+        // aspectCorrectedViewport() folds the page's own aspect into the viewport it hands the
+        // generator: effectiveViewportAspect = viewportAspect / pageAspect = 0.45 / 2.5 = 0.18,
+        // giving effWidth=1080*1600=1_728_000, effHeight=2400*4000=9_600_000. Against *that*
+        // viewport the same panel is a poor fit (0.5 / 0.18 ~= 2.78, outside [0.4, 2.5]) and must
+        // expand — demonstrating the two checks genuinely disagree, not just differ by a rounding
+        // error, when the fix isn't applied.
+        val bubble = PanelRect(0.05f, 0.05f, 0.2f, 0.15f)
+        val panel = Panel(bounds = PanelRect(0f, 0f, 0.5f, 1f), bubbles = listOf(bubble))
+
+        val rawStops = SpeechBubblePanelSubStopGenerator.generate(
+            panel, PanelDirection.LTR, viewWidth = 1080, viewHeight = 2400,
+        ) { null }
+        val realAspectAwareStops = SpeechBubblePanelSubStopGenerator.generate(
+            panel, PanelDirection.LTR, viewWidth = 1_728_000, viewHeight = 9_600_000,
+        ) { null }
+
+        assertTrue(rawStops.isEmpty(), "raw normalized viewport should call this a fit")
+        assertEquals(
+            listOf(bubble, panel.bounds),
+            realAspectAwareStops,
+            "the same panel, corrected for the page's real pixel aspect ratio, should not fit and must expand",
+        )
+    }
 }
