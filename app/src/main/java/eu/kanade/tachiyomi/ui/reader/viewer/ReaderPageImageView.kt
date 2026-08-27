@@ -482,7 +482,8 @@ open class ReaderPageImageView @JvmOverloads constructor(
     var dualPageSplitActive: Boolean = false
 
     private var panelStops: List<PanelRect> = emptyList()
-    private var panelStopIndex: Int = -1
+    internal var panelStopIndex: Int = -1
+        private set
     private var panelStopsEnterForward: Boolean = true
 
     /**

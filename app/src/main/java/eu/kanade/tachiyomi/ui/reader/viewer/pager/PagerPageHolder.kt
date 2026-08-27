@@ -15,6 +15,7 @@ import eu.kanade.tachiyomi.ui.reader.viewer.panel.Panel
 import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelRect
 import eu.kanade.tachiyomi.ui.reader.viewer.panel.SpeechBubblePanelSubStopGenerator
 import eu.kanade.tachiyomi.ui.reader.viewer.panel.flattenToStops
+import eu.kanade.tachiyomi.ui.reader.viewer.panel.resumeIndexAfterReshape
 import eu.kanade.tachiyomi.ui.webview.WebViewActivity
 import eu.kanade.tachiyomi.widget.ViewPagerAdapter
 import kotlinx.coroutines.Job
@@ -90,6 +91,13 @@ class PagerPageHolder(
      */
     private var directionJob: Job? = null
 
+    /**
+     * Job keeping the panel-by-panel bubble-stops toggle in sync with the user's setting, for the
+     * same reason as [opacityJob]. Re-expands the already-detected [detectedPanels] (via
+     * [expandForCurrentView]) rather than re-running full panel detection.
+     */
+    private var bubbleStopsJob: Job? = null
+
     /** Job keeping the debug panel-order overlay in sync with the user's setting, for the same reason as [opacityJob]. */
     private var debugOrderJob: Job? = null
 
@@ -157,6 +165,27 @@ class PagerPageHolder(
                         )
                     }
             }
+            bubbleStopsJob = scope.launch {
+                viewer.readerPreferences.panelByPanelBubbleStopsEnabled().changes().drop(1).collectLatest {
+                    val oldPanels = detectedPanels ?: return@collectLatest
+                    val oldFlatIndex = panelStopIndex
+                    val oldShowIntro = viewer.readerPreferences.panelByPanelShowFullPageIntro.get() && page.index == 0
+                    val oldShowOutro = viewer.readerPreferences.panelByPanelShowFullPageOutro.get()
+
+                    val newPanels = expandForCurrentView(oldPanels.map { it.copy(subStops = emptyList()) }, viewer)
+                    detectedPanels = newPanels
+                    val newStops = newPanels.flattenToStops(showIntro = oldShowIntro, showOutro = oldShowOutro)
+                    val resumeIndex = newPanels.resumeIndexAfterReshape(
+                        oldFlatIndex = oldFlatIndex,
+                        oldPanels = oldPanels,
+                        oldShowIntro = oldShowIntro,
+                        oldShowOutro = oldShowOutro,
+                        newShowIntro = oldShowIntro,
+                        newShowOutro = oldShowOutro,
+                    )
+                    setPanelStops(newStops, anchorRect = newStops.getOrNull(resumeIndex))
+                }
+            }
             directionJob = scope.launch {
                 // Skip the initial replay: it fires before the page has even loaded (panelImageBytes
                 // is still null then), so it would be a redundant no-op racing the first natural
@@ -198,6 +227,8 @@ class PagerPageHolder(
         introOutroJob = null
         directionJob?.cancel()
         directionJob = null
+        bubbleStopsJob?.cancel()
+        bubbleStopsJob = null
         debugOrderJob?.cancel()
         debugOrderJob = null
         // Safe here specifically because PagerPageHolder is one-shot: ViewPagerAdapter.destroyItem
