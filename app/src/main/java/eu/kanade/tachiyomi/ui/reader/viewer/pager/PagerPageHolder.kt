@@ -202,12 +202,18 @@ class PagerPageHolder(
             }
             val viewModel = viewer.activity.viewModel
             viewModel.state.value.savedPanelStop?.let { saved ->
-                if (saved.pageIndex == page.index) panelStopIndexOverride = saved.stopIndex
+                if (saved.pageIndex == page.index) {
+                    if (saved.anchorRect != null) {
+                        panelStopAnchorOverride = saved.anchorRect
+                    } else {
+                        panelStopIndexOverride = saved.stopIndex
+                    }
+                }
             }
             onPanelStopChanged = { index ->
                 // Guard against offscreen-neighbor holders (see isCurrentReaderPage) overwriting
                 // the actually-visible page's saved position with their own entry stop.
-                if (viewer.isCurrentReaderPage(page)) viewModel.savePanelStop(page.index, index)
+                if (viewer.isCurrentReaderPage(page)) viewModel.savePanelStop(page.index, index, currentPanelStopRect())
             }
         }
         loadJob = scope.launch { loadPageAndProcessStatus() }

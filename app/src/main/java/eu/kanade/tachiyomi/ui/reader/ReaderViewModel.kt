@@ -52,6 +52,7 @@ import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
 import eu.kanade.tachiyomi.ui.reader.setting.UpscaleEnabledOverride
 import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
+import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelRect
 import eu.kanade.tachiyomi.util.chapter.filterDownloaded
 import eu.kanade.tachiyomi.util.chapter.removeDuplicates
 import eu.kanade.tachiyomi.util.editCover
@@ -469,9 +470,9 @@ class ReaderViewModel(
     }
 
     /** Records the panel-by-panel stop currently shown, so it survives the viewer being recreated. */
-    fun savePanelStop(pageIndex: Int, stopIndex: Int) {
+    fun savePanelStop(pageIndex: Int, stopIndex: Int, anchorRect: PanelRect?) {
         mutableState.update {
-            it.copy(savedPanelStop = PanelStopPosition(pageIndex, stopIndex))
+            it.copy(savedPanelStop = PanelStopPosition(pageIndex, stopIndex, anchorRect))
         }
     }
 
@@ -1197,7 +1198,7 @@ class ReaderViewModel(
     }
 
     /** A panel-by-panel stop index for a specific page, identified by its index within the chapter. */
-    data class PanelStopPosition(val pageIndex: Int, val stopIndex: Int)
+    data class PanelStopPosition(val pageIndex: Int, val stopIndex: Int, val anchorRect: PanelRect?)
 
     sealed interface Dialog {
         data object Loading : Dialog

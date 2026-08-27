@@ -493,6 +493,15 @@ open class ReaderPageImageView @JvmOverloads constructor(
      */
     var panelStopIndexOverride: Int? = null
 
+    /**
+     * Rotation-restore anchor, preferred over [panelStopIndexOverride] when present. A raw saved
+     * index isn't safe once a page's stop list can reshape based on view orientation (see
+     * SpeechBubblePanelSubStopGenerator) — this stores the actual stop being read instead, resolved
+     * back to an index in the new (possibly differently-shaped) list via the same panel-aware
+     * grow/shrink rule used for the live preference-toggle case.
+     */
+    var panelStopAnchorOverride: PanelRect? = null
+
     /** Notified whenever the current panel stop changes, so it can be persisted for restoration. */
     var onPanelStopChanged: ((index: Int) -> Unit)? = null
 
@@ -1419,10 +1428,12 @@ open class ReaderPageImageView @JvmOverloads constructor(
             // for the page currently being read — land on whichever new stop covers roughly the
             // same content the reader was already looking at, instead of jumping to the entry stop.
             anchorRect != null -> nearestPanelStopIndex(anchorRect)
+            panelStopAnchorOverride != null -> nearestPanelStopIndex(panelStopAnchorOverride!!)
             else -> panelStopIndexOverride?.coerceIn(0, panelStops.lastIndex)
                 ?: if (panelStopsEnterForward) 0 else panelStops.lastIndex
         }
         panelStopIndexOverride = null
+        panelStopAnchorOverride = null
         userMovedAwayFromStop = false
         if (panelModeActive) {
             (pageView as? SubsamplingScaleImageView)?.let {
