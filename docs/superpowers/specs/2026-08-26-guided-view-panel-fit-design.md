@@ -189,40 +189,51 @@ A `ReaderPreferences` boolean, off by default (e.g.
 `subStops` stays empty (today's exact behavior). Exposed in the Guided
 View settings alongside the other panel-by-panel toggles.
 
-### Toggling mid-read: same panel, not nearest rect
+### Resuming across a stop-list reshape: one rule for both toggling and rotating
 
-The preference can change while a `PagerPageHolder` is alive and
-currently showing one of its stops — same situation the existing
-`introOutroJob` in `PagerPageHolder` already handles for the intro/outro
-toggle, and it needs the identical reactive treatment: a new
-`bubbleStopsJob` collecting `readerPreferences.panelByPanelBubbleStopsEnabled.changes()`,
-re-running the generator step + `flattenToStops()` against the
-already-cached `detectedPanels` and calling `setPanelStops(newStops,
-anchorRect = ...)`, exactly like `introOutroJob` does today.
+Two different triggers can change a page's stop list *shape* while the
+reader is mid-page: toggling the preference live (handled by a new
+`bubbleStopsJob` in `PagerPageHolder`, reacting the same way the existing
+`introOutroJob` reacts to the intro/outro toggle), and rotating the
+device (a fresh `PagerPageHolder` re-detects/re-flattens against the new
+orientation's dimensions — see below). Both need the same answer to "the
+stop list for this page just changed shape — where do I resume?", so
+they should share one rule and one helper rather than two bespoke ones.
 
-The subtlety: plain `anchorRect`-based nearest-stop lookup (today's
-`nearestPanelStopIndex`, matching by rect distance) gives the right
-answer when *turning off* — the panel collapses to one stop and that's
-trivially the nearest match — but the wrong answer when *turning on*.
-Expanding a panel produces `[bubble1, bubble2, ..., full-panel]`, and the
-trailing full-panel stop is geometrically identical to whatever single
-stop you were just viewing — so nearest-by-distance would resolve to that
-trailing stop, not `bubble1`. That's backwards: turning the feature on
-mid-panel should start that panel's bubble sequence from the beginning,
-and turning it off mid-sequence should always drop you back to that
-panel's single plain view.
+Plain `anchorRect`-based nearest-stop lookup (today's
+`nearestPanelStopIndex`, matching by rect distance) is *almost* right,
+but has one blind spot: when a panel's stop count for you specifically
+*grows* (e.g. it had one stop — its full bounds — and now has three:
+two bubbles plus that same full bounds), the trailing full-panel stop is
+geometrically identical to whatever single stop you were just viewing.
+Nearest-by-distance would resolve to that trailing stop, not `bubble1` —
+backwards, since growing should start the new sequence from the
+beginning. When a panel's stop count *shrinks or stays the same*,
+nearest-by-distance already gives the right answer (shrinking to one
+stop trivially matches; staying the same size means the underlying
+bubble rects are identical either side, since `bubbles` is
+orientation-agnostic cached data — this is exactly what makes rotation
+resume correctly find the same bubble you were on, not just the same
+panel).
 
-The correct rule is **same panel, first of its (possibly new) stops** —
-not nearest rect. This needs one more piece: a way to know which original
-panel a flattened stop index belongs to, since `flattenToStops()`'s
+**The rule:** compare the current stop's owning panel's *old* stop count
+to its *new* stop count.
+- If new > old (this panel just grew), resume at that panel's **first**
+  new stop.
+- Otherwise (same size, or shrank), resume at the **nearest-by-distance**
+  stop among that panel's new stops only (not the whole page's stops).
+
+This needs one supporting piece: a way to know which original panel a
+flattened stop index belongs to, since `flattenToStops()`'s
 `List<PanelRect>` return type discards that association once flattened.
-Add a small helper alongside it, e.g.
+Add a helper alongside it:
 `List<Panel>.panelIndexForFlatStop(flatIndex: Int, showIntro: Boolean, showOutro: Boolean): Int?`
 (`null` for an intro/outro full-page bracket stop, which belongs to no
-panel), so the toggle handler can: look up which panel owned the
-*current* stop under the old expansion state, re-flatten under the new
-state, then resume at the first flat index that maps back to that same
-panel.
+panel). With it, both the toggle handler and the rotation-restore path
+can: find which panel owned the old stop, count that panel's stops in
+the old and new flattened lists, and apply the rule above — restricting
+`nearestPanelStopIndex`'s search to just the flat-index range belonging
+to that one panel when the "same or shrank" branch applies.
 
 ### Rotation-restore gap: index-based restore isn't safe anymore
 
@@ -235,12 +246,22 @@ stop in portrait can become three (two bubbles + full panel) in landscape,
 so a raw saved index can silently land on the wrong panel or bubble after
 a rotation.
 
-Fix: extend the save side to also capture the *rect* of the stop being
-read (not just its index), and change the restore path to prefer an
-anchor-based lookup — reusing the existing `nearestPanelStopIndex(anchor:
-PanelRect)` helper already used for the intro/outro-toggle resume case —
-falling back to the raw index only if no anchor was saved (e.g. state
-persisted before this change).
+Fix: `PanelStopPosition` gains an `anchorRect: PanelRect?` field
+(`ReaderViewModel.savePanelStop` already runs from
+`PagerPageHolder.onPanelStopChanged`, which has `currentPanelStopRect()`
+available to pass through). On restore, `PagerPageHolder.init` stashes
+this as a new `panelStopAnchorOverride: PanelRect?` field (parallel to
+today's `panelStopIndexOverride: Int?`) rather than setting the raw index
+directly. `setPanelStops()`'s resume-priority order becomes: explicit
+`anchorRect` parameter (settings-change resume) > `panelStopAnchorOverride`
+(rotation resume, using the same panel-aware rule above instead of a
+bare `nearestPanelStopIndex` call) > `panelStopIndexOverride` (kept only
+as a last-resort fallback for the rare case `currentPanelStopRect()`
+returned null when saving, e.g. detection hadn't produced any stops
+yet) > the existing enter-forward default. `savedPanelStop` only needs
+to survive a configuration change within the same app process (it's
+plain `ViewModel` state, never serialized to disk), so there's no
+existing-persisted-data shape to migrate.
 
 ### `DETECTOR_VERSION`
 
@@ -272,13 +293,16 @@ same commit as this change, not after.
 - Rotation-restore: manually verify resuming mid-bubble-stop across a
   rotation lands on the same (or nearest equivalent) content, not a
   different panel entirely.
-- `panelIndexForFlatStop()` and the toggle-resume rule: unit-testable
+- `panelIndexForFlatStop()` and the grow/shrink resume rule: unit-testable
   directly — given an old flattened list, an old stop index, and a new
-  flattened list (different shape), assert the resume index is the new
-  list's first stop belonging to the same panel. Explicitly cover both
-  directions: turning the preference on while viewing a plain panel
-  (must resume at that panel's first bubble, not its trailing full-panel
-  reveal), and turning it off mid-bubble-sequence (must resume at that
-  panel's single collapsed stop). These two directions are easy to get
-  backwards, so they should be asserted separately, not just spot-checked
-  on-device.
+  flattened list (different shape), assert the resume index per the rule
+  in "Resuming across a stop-list reshape" above. Explicitly cover, as
+  separate cases (these are easy to get backwards, so assert them
+  separately rather than spot-checking on-device):
+  - Grow: turning the preference on while viewing a plain panel resumes
+    at that panel's first bubble, not its trailing full-panel reveal.
+  - Shrink: turning it off mid-bubble-sequence resumes at that panel's
+    single collapsed stop.
+  - Same size (the rotation case where the panel is expanded both
+    before and after): resumes at the same bubble, via nearest-distance
+    restricted to that panel's stops, not just the first one.
