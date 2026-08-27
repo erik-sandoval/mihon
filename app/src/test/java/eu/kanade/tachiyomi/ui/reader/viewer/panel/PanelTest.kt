@@ -87,4 +87,96 @@ class PanelTest {
         assertEquals(0.6f, rect.width, 0.0001f)
         assertEquals(0.5f, rect.height, 0.0001f)
     }
+
+    @Test
+    fun `panelIndexForFlatStop maps a flat index back to its owning panel, or null for an intro-outro bracket`() {
+        val panels = listOf(
+            Panel(bounds = PanelRect(0f, 0f, 0.5f, 1f)), // 1 stop
+            Panel(
+                bounds = PanelRect(0.5f, 0f, 1f, 1f),
+                subStops = listOf(PanelRect(0.5f, 0f, 0.7f, 1f), PanelRect(0.5f, 0f, 1f, 1f)),
+            ), // 2 stops
+        )
+        // Flattened with intro+outro: [FULL_PAGE, panel0, panel1-sub0, panel1-sub1, FULL_PAGE]
+
+        assertEquals(null, panels.panelIndexForFlatStop(0, showIntro = true, showOutro = true)) // intro bracket
+        assertEquals(0, panels.panelIndexForFlatStop(1, showIntro = true, showOutro = true))
+        assertEquals(1, panels.panelIndexForFlatStop(2, showIntro = true, showOutro = true))
+        assertEquals(1, panels.panelIndexForFlatStop(3, showIntro = true, showOutro = true))
+        assertEquals(null, panels.panelIndexForFlatStop(4, showIntro = true, showOutro = true)) // outro bracket
+    }
+
+    @Test
+    fun `resumeIndexAfterReshape resumes at the panel's first new stop when its stop count grew`() {
+        val oldPanels = listOf(Panel(bounds = PanelRect(0f, 0f, 1f, 0.15f))) // 1 stop, plain view
+        val newPanels = listOf(
+            Panel(
+                bounds = PanelRect(0f, 0f, 1f, 0.15f),
+                subStops = listOf(
+                    PanelRect(0.05f, 0.05f, 0.25f, 0.15f),
+                    PanelRect(0.7f, 0.05f, 0.9f, 0.15f),
+                    PanelRect(0f, 0f, 1f, 0.15f),
+                ),
+            ), // grew to 3 stops
+        )
+
+        val resumeIndex = newPanels.resumeIndexAfterReshape(
+            oldFlatIndex = 0,
+            oldPanels = oldPanels,
+            oldShowIntro = false,
+            oldShowOutro = false,
+            newShowIntro = false,
+            newShowOutro = false,
+        )
+
+        assertEquals(0, resumeIndex) // first of the panel's new stops (bubble1), not the trailing full-panel reveal
+    }
+
+    @Test
+    fun `resumeIndexAfterReshape resumes at the panel's single stop when its stop count shrank`() {
+        val oldPanels = listOf(
+            Panel(
+                bounds = PanelRect(0f, 0f, 1f, 0.15f),
+                subStops = listOf(
+                    PanelRect(0.05f, 0.05f, 0.25f, 0.15f),
+                    PanelRect(0.7f, 0.05f, 0.9f, 0.15f),
+                    PanelRect(0f, 0f, 1f, 0.15f),
+                ),
+            ),
+        )
+        val newPanels = listOf(Panel(bounds = PanelRect(0f, 0f, 1f, 0.15f))) // shrank to 1 stop
+
+        val resumeIndex = newPanels.resumeIndexAfterReshape(
+            oldFlatIndex = 1, // was on the second bubble
+            oldPanels = oldPanels,
+            oldShowIntro = false,
+            oldShowOutro = false,
+            newShowIntro = false,
+            newShowOutro = false,
+        )
+
+        assertEquals(0, resumeIndex) // the panel's only remaining stop
+    }
+
+    @Test
+    fun `resumeIndexAfterReshape resumes at the same bubble when the panel's stop count is unchanged`() {
+        val bubble1 = PanelRect(0.05f, 0.05f, 0.25f, 0.15f)
+        val bubble2 = PanelRect(0.7f, 0.05f, 0.9f, 0.15f)
+        val bounds = PanelRect(0f, 0f, 1f, 0.15f)
+        val oldPanels = listOf(Panel(bounds = bounds, subStops = listOf(bubble1, bubble2, bounds)))
+        // Same bubbles, same order — as they would be across a rotation, since bubble rects are
+        // orientation-agnostic cached data.
+        val newPanels = listOf(Panel(bounds = bounds, subStops = listOf(bubble1, bubble2, bounds)))
+
+        val resumeIndex = newPanels.resumeIndexAfterReshape(
+            oldFlatIndex = 1, // was on bubble2
+            oldPanels = oldPanels,
+            oldShowIntro = false,
+            oldShowOutro = false,
+            newShowIntro = false,
+            newShowOutro = false,
+        )
+
+        assertEquals(1, resumeIndex) // still bubble2, not reset to bubble1
+    }
 }

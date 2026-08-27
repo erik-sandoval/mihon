@@ -53,3 +53,65 @@ fun List<Panel>.flattenToStops(showIntro: Boolean = false, showOutro: Boolean = 
     val withIntro = if (showIntro) listOf(PanelRect.FULL_PAGE) + stops else stops
     return if (showOutro) withIntro + PanelRect.FULL_PAGE else withIntro
 }
+
+/**
+ * Maps a flat stop index (as produced by [flattenToStops] with the same [showIntro]/[showOutro])
+ * back to the index of the panel in this list that owns it, or `null` if [flatIndex] is an
+ * intro/outro full-page bracket stop, which belongs to no panel.
+ */
+fun List<Panel>.panelIndexForFlatStop(flatIndex: Int, showIntro: Boolean, showOutro: Boolean): Int? {
+    val stopsPerPanel = map { it.subStops.ifEmpty { listOf(it.bounds) }.size }
+    if (stopsPerPanel.size == 1 && this.single().bounds == PanelRect.FULL_PAGE && stopsPerPanel.single() == 1) {
+        // flattenToStops' own no-duplicate-fallback rule: exactly one stop, no brackets at all.
+        return if (flatIndex == 0) 0 else null
+    }
+    var cursor = if (showIntro) 1 else 0
+    for ((panelIndex, count) in stopsPerPanel.withIndex()) {
+        if (flatIndex in cursor until cursor + count) return panelIndex
+        cursor += count
+    }
+    return null // falls in the outro bracket (or out of range)
+}
+
+/**
+ * Resumes across a stop list that may have reshaped (a preference toggle changed, or the
+ * device rotated) — this receiver is the *new* flattened panel list. Finds which panel owned
+ * [oldFlatIndex] under [oldPanels], then: if that panel's stop count grew, resumes at its first
+ * new stop; otherwise (shrank or unchanged), resumes at the nearest-by-distance stop among only
+ * that panel's new stops. See the design spec's "Resuming across a stop-list reshape" section
+ * for why one rule serves both triggers.
+ */
+fun List<Panel>.resumeIndexAfterReshape(
+    oldFlatIndex: Int,
+    oldPanels: List<Panel>,
+    oldShowIntro: Boolean,
+    oldShowOutro: Boolean,
+    newShowIntro: Boolean,
+    newShowOutro: Boolean,
+): Int {
+    val ownerPanelIndex = oldPanels.panelIndexForFlatStop(oldFlatIndex, oldShowIntro, oldShowOutro)
+        ?: return 0
+    val oldStopsForOwner = oldPanels[ownerPanelIndex].subStops.ifEmpty { listOf(oldPanels[ownerPanelIndex].bounds) }
+    val oldAnchorRect = run {
+        val cursorStart = (if (oldShowIntro) 1 else 0) +
+            oldPanels.take(ownerPanelIndex).sumOf { it.subStops.ifEmpty { listOf(it.bounds) }.size }
+        oldStopsForOwner[oldFlatIndex - cursorStart]
+    }
+
+    val newStopsPerPanel = map { it.subStops.ifEmpty { listOf(it.bounds) } }
+    val newStopsForOwner = newStopsPerPanel.getOrNull(ownerPanelIndex) ?: return 0
+    val newCursorStart = (if (newShowIntro) 1 else 0) +
+        newStopsPerPanel.take(ownerPanelIndex).sumOf { it.size }
+
+    return if (newStopsForOwner.size > oldStopsForOwner.size) {
+        newCursorStart
+    } else {
+        val nearestLocalIndex = newStopsForOwner.indices.minByOrNull { i ->
+            val s = newStopsForOwner[i]
+            val dx = s.centerX - oldAnchorRect.centerX
+            val dy = s.centerY - oldAnchorRect.centerY
+            dx * dx + dy * dy
+        } ?: 0
+        newCursorStart + nearestLocalIndex
+    }
+}
