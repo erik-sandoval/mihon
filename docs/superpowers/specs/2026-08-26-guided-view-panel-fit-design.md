@@ -121,38 +121,73 @@ surviving bubbles attached:
   `return rects.map { rect -> Panel(rect) }` — update to attach each
   rect's associated bubbles here.
 
-### Deciding expansion: fresh, at flatten time, not cached
+### Reusing the existing `PanelSubStopGenerator` extension point
 
-A new step runs between "get this page's `List<Panel>`" (from cache or
-fresh detection) and the existing `List<Panel>.flattenToStops(...)` call
-in `PagerPageHolder.loadPanels()`/`refreshPanels()` — the same place that
-already has the real, current `ReaderPageImageView`'s width/height
-available:
+There's already an interface built for exactly this purpose,
+`PanelSubStopGenerator` (`PanelSubStopGenerator.kt`):
 
 ```kotlin
-fun List<Panel>.expandOversizedPanels(viewWidth: Int, viewHeight: Int, enabled: Boolean): List<Panel>
+interface PanelSubStopGenerator {
+    suspend fun generate(panel: PanelRect, direction: PanelDirection, cropPanel: suspend () -> Bitmap?): List<PanelRect>
+}
 ```
 
-For each panel: if `enabled` is true, the panel doesn't fit the current
-`viewWidth`/`viewHeight` well (reusing/extracting the existing
-fit-quality check already implicit in `panelStopTarget()`'s scale-capping
-logic), and `panel.bubbles` is non-empty, set
-`subStops = panel.bubbles + panel.bounds` (bubbles first, full panel
-last). Otherwise leave `subStops` empty. `flattenToStops()` itself needs
-**no changes** — its existing
+("Returns ordered sub-stops for panel, or an empty list if it doesn't
+need any... When non-empty, the last stop is always the full panel
+bounds.") — exactly the "bubbles then full panel" contract this feature
+needs. There's also an existing implementation,
+`GeometricPanelSubStopGenerator`, which splits a wide panel into three
+geometric left/center/right stops — this is dead code (defined and
+tested, but never called from anywhere in the app) implementing the
+approach explicitly rejected during design (an arbitrary geometric cut
+risks severing scene context). It gets deleted as part of this work,
+along with its test — this feature adds a new implementation of the same
+interface rather than reviving the old one.
+
+New implementation, e.g. `SpeechBubblePanelSubStopGenerator`, ignores
+`cropPanel` entirely (no OCR/content-inspection needed — bubble
+*locations* are already known from detection, see above) and instead:
+
+- Takes the panel's already-associated `bubbles` (see above) plus the
+  current view's fit-quality check (reusing/extracting the existing
+  logic already implicit in `panelStopTarget()`'s scale-capping) as
+  additional inputs beyond the interface's own parameters.
+- Returns `emptyList()` if the panel fits the current view well, has no
+  bubbles, **or is the `PanelRect.FULL_PAGE` "no real panels detected"
+  fallback sentinel** — this last check is a hard, explicit guard, not
+  an incidental consequence of aspect-ratio math. It's the fix for a
+  real regression from an earlier, abandoned version of this idea: the
+  existing `flattenToStops()`'s own "was this just the full-page
+  fallback" check (`if (stops.size == 1 && stops.single() ==
+  PanelRect.FULL_PAGE) return stops`) runs *after* flattening, so if a
+  generator had already split that fallback sentinel upstream, this
+  check would never catch it (the flattened list would no longer have
+  exactly one stop). The guard belongs at the generator call site,
+  before generation ever runs, not as a post-hoc check.
+- Otherwise returns `bubbles + panel` (bubbles first, full panel last).
+
+Call site: a new step between "get this page's `List<Panel>`" (from
+cache or fresh detection) and the existing
+`List<Panel>.flattenToStops(...)` call in
+`PagerPageHolder.loadPanels()`/`refreshPanels()` — the same place that
+already has the real, current `ReaderPageImageView`'s width/height
+available — runs the generator per panel and sets `subStops` from its
+result. `flattenToStops()` itself needs **no changes** — its existing
 `flatMap { panel -> panel.subStops.ifEmpty { listOf(panel.bounds) } }`
 already does exactly the right thing once `subStops` is populated
 correctly upstream.
 
 This keeps the cache fully orientation-agnostic: `bubbles` is cached,
-`subStops` is always computed fresh and never persisted.
+`subStops` is always computed fresh (by running the generator live) and
+never persisted.
 
 ### New preference
 
 A `ReaderPreferences` boolean, off by default (e.g.
-`panelByPanelBubbleStopsEnabled`), gating `enabled` in
-`expandOversizedPanels()`. Exposed in the Guided View settings alongside
-the other panel-by-panel toggles.
+`panelByPanelBubbleStopsEnabled`), gating whether
+`SpeechBubblePanelSubStopGenerator` runs at all — when off, every panel's
+`subStops` stays empty (today's exact behavior). Exposed in the Guided
+View settings alongside the other panel-by-panel toggles.
 
 ### Toggling mid-read: same panel, not nearest rect
 
@@ -161,7 +196,7 @@ currently showing one of its stops — same situation the existing
 `introOutroJob` in `PagerPageHolder` already handles for the intro/outro
 toggle, and it needs the identical reactive treatment: a new
 `bubbleStopsJob` collecting `readerPreferences.panelByPanelBubbleStopsEnabled.changes()`,
-re-running `expandOversizedPanels()` + `flattenToStops()` against the
+re-running the generator step + `flattenToStops()` against the
 already-cached `detectedPanels` and calling `setPanelStops(newStops,
 anchorRect = ...)`, exactly like `introOutroJob` does today.
 
@@ -223,10 +258,13 @@ same commit as this change, not after.
 - Bubble-to-panel association and reading-order logic: unit-testable the
   same way `PanelPipelineTest`/`PanelOrderingTest` already test this
   pipeline — synthetic panel/bubble rect fixtures, no device needed.
-- `expandOversizedPanels()`'s fit-quality decision: unit-testable with
+- `SpeechBubblePanelSubStopGenerator`'s decision logic: unit-testable with
   synthetic view dimensions and panel rects covering the portrait/landscape
   cases already handled by `panelStopTarget()`, plus the new in-between
-  cases this feature targets.
+  cases this feature targets — and explicitly assert it returns
+  `emptyList()` for a `PanelRect.FULL_PAGE` panel regardless of view
+  dimensions or bubble content, covering the exact regression this design
+  guards against.
 - On-device validation: per this project's established methodology, pull
   real captured coordinates (existing `panelDebug`/`PanelOrderDebug`
   logcat lines) for a genuinely oversized panel before considering this
