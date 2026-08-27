@@ -22,3 +22,6 @@ local.properties
 
 # Local git worktrees (not committed)
 .worktrees/
+
+# Subagent-driven-development scratch workspace (ledgers, briefs, review packages)
+.superpowers/
