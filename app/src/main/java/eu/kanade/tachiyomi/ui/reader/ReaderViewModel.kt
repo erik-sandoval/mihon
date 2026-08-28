@@ -14,6 +14,7 @@ import dev.zacsweers.metro.Assisted
 import dev.zacsweers.metro.AssistedFactory
 import dev.zacsweers.metro.AssistedInject
 import dev.zacsweers.metro.ContributesIntoMap
+import dev.icerock.moko.resources.StringResource
 import dev.zacsweers.metrox.viewmodel.ViewModelAssistedFactory
 import dev.zacsweers.metrox.viewmodel.ViewModelAssistedFactoryKey
 import eu.kanade.domain.base.BasePreferences
@@ -32,6 +33,7 @@ import eu.kanade.tachiyomi.data.database.models.toDomainChapter
 import eu.kanade.tachiyomi.data.download.DownloadCache
 import eu.kanade.tachiyomi.data.download.DownloadManager
 import eu.kanade.tachiyomi.data.reader.PanelFullPageOverrideRepository
+import eu.kanade.tachiyomi.data.reader.PanelGoodFlagRepository
 import eu.kanade.tachiyomi.data.download.DownloadProvider
 import eu.kanade.tachiyomi.data.download.model.Download
 import eu.kanade.tachiyomi.data.saver.Image
@@ -52,6 +54,10 @@ import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
 import eu.kanade.tachiyomi.ui.reader.setting.ReadingMode
 import eu.kanade.tachiyomi.ui.reader.setting.UpscaleEnabledOverride
 import eu.kanade.tachiyomi.ui.reader.viewer.Viewer
+import eu.kanade.tachiyomi.ui.reader.viewer.pager.PanelByPanelViewer
+import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelFlagExporter
+import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelFlagOutcome
+import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelFlagReason
 import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelRect
 import eu.kanade.tachiyomi.util.chapter.filterDownloaded
 import eu.kanade.tachiyomi.util.chapter.removeDuplicates
@@ -94,6 +100,7 @@ import tachiyomi.domain.library.service.LibraryPreferences
 import tachiyomi.domain.manga.interactor.GetManga
 import tachiyomi.domain.manga.model.Manga
 import tachiyomi.domain.source.service.SourceManager
+import tachiyomi.i18n.MR
 import tachiyomi.source.local.image.LocalCoverManager
 import tachiyomi.source.local.isLocal
 import java.util.Date
@@ -130,6 +137,8 @@ class ReaderViewModel(
     private val chapterCache: ChapterCache,
     private val downloadCache: DownloadCache,
     private val panelFullPageOverrideRepository: PanelFullPageOverrideRepository,
+    private val panelGoodFlagRepository: PanelGoodFlagRepository,
+    private val panelFlagExporter: PanelFlagExporter,
 ) : ViewModel() {
 
     @AssistedFactory
@@ -503,6 +512,14 @@ class ReaderViewModel(
         val inDownloadRange = page.number.toDouble() / pages.size > 0.25
         if (inDownloadRange) {
             downloadNextChapters()
+        }
+
+        val chapterId = selectedChapter.chapter.id
+        if (chapterId != null) {
+            viewModelScope.launchIO {
+                val markedGood = panelGoodFlagRepository.isMarkedGood(chapterId, page.index)
+                mutableState.update { it.copy(isCurrentPageMarkedGood = markedGood) }
+            }
         }
 
         eventChannel.trySend(Event.PageChanged)
@@ -985,6 +1002,102 @@ class ReaderViewModel(
         }
     }
 
+    /** Opens the panel-flag reason picker for the currently visible page — see [Dialog.PanelFlagPicker]. */
+    fun openPanelFlagPicker() {
+        val page = state.value.currentChapter?.pages?.getOrNull(state.value.currentPage - 1) ?: return
+        mutableState.update { it.copy(dialog = Dialog.PanelFlagPicker(page)) }
+    }
+
+    /**
+     * Exports the flag-picker dialog's target page's original image plus everything the ML
+     * detector currently sees for it — including sub-threshold near-misses the display pipeline
+     * never shows — to external storage, for `adb pull`ing into a desktop fine-tuning workflow
+     * later. See [PanelFlagExporter]'s doc: this never captures ground truth, only what the model saw.
+     */
+    fun flagPageForPanelReview(reason: PanelFlagReason) {
+        val page = (state.value.dialog as? Dialog.PanelFlagPicker)?.page ?: return
+        // Close the picker the instant a reason is picked — the export itself runs async below
+        // and shouldn't hold the dialog open while it does.
+        mutableState.update { it.copy(dialog = null) }
+        if (reason == PanelFlagReason.GOOD_EXAMPLE) {
+            // Good doesn't toggle-by-existence the way the failure reasons do below — it's
+            // already toggleable via the DB-backed isCurrentPageMarkedGood flag (the same state
+            // the thumbs-up icon reflects), so route through that exact path instead of
+            // duplicating it, or the two entry points fall out of sync with each other.
+            toggleGoodFlag(page)
+            return
+        }
+        viewModelScope.launchNonCancellable {
+            val outcome = flagPage(page, reason)
+            val messageRes = when (outcome) {
+                PanelFlagOutcome.Flagged -> MR.strings.panel_flag_saved
+                PanelFlagOutcome.Removed -> MR.strings.panel_flag_removed
+                PanelFlagOutcome.Failed -> MR.strings.panel_flag_failed
+            }
+            eventChannel.send(Event.PanelFlagged(messageRes))
+        }
+    }
+
+    /**
+     * One-tap toggle for "this page's detection is correct, keep it as good training data" — no
+     * dialog, no reason picker, unlike [flagPageForPanelReview]. Reachable from the reader's
+     * bottom bar (Guided view only) specifically so marking a good page doesn't need the
+     * long-press sheet at all. Derives the currently visible page from
+     * [State.currentChapter]/[State.currentPage] rather than [Dialog.PageActions], since there's
+     * no dialog open when this is tapped.
+     *
+     * Unlike [flagPageForPanelReview]'s failure reasons — which are an append-only log of reports,
+     * any number of which can exist for the same page — a good mark is toggleable state: tapping
+     * again while already marked un-marks it (removing both the DB row and the exported files), so
+     * a mis-tap or a changed mind doesn't leave bad data sitting in the "known good" export set.
+     */
+    fun toggleCurrentPageGoodFlag() {
+        val page = state.value.currentChapter?.pages?.getOrNull(state.value.currentPage - 1) ?: return
+        toggleGoodFlag(page)
+    }
+
+    /** Shared by [toggleCurrentPageGoodFlag] and [flagPageForPanelReview]'s GOOD_EXAMPLE case — see their docs. */
+    private fun toggleGoodFlag(page: ReaderPage) {
+        val chapterId = page.chapter.chapter.id ?: return
+        val manga = manga ?: return
+        val chapterName = page.chapter.chapter.name
+        val wasMarked = state.value.isCurrentPageMarkedGood
+        viewModelScope.launchNonCancellable {
+            if (wasMarked) {
+                val removed = panelFlagExporter.removeGoodExport(manga.title, chapterName, page.number)
+                panelGoodFlagRepository.removeMarkedGood(chapterId, page.index)
+                mutableState.update { it.copy(isCurrentPageMarkedGood = false) }
+                eventChannel.send(
+                    Event.PanelFlagged(if (removed) MR.strings.panel_flag_unmarked_good else MR.strings.panel_flag_unmark_good_failed),
+                )
+            } else {
+                val success = flagPage(page, PanelFlagReason.GOOD_EXAMPLE) == PanelFlagOutcome.Flagged
+                if (success) {
+                    panelGoodFlagRepository.setMarkedGood(chapterId, page.index)
+                    mutableState.update { it.copy(isCurrentPageMarkedGood = true) }
+                }
+                eventChannel.send(
+                    Event.PanelFlagged(if (success) MR.strings.panel_flag_marked_good else MR.strings.panel_flag_mark_good_failed),
+                )
+            }
+        }
+    }
+
+    /** Exports [page] as a [reason] flag. Callers report the result via [Event.PanelFlagged] themselves. */
+    private suspend fun flagPage(page: ReaderPage, reason: PanelFlagReason): PanelFlagOutcome {
+        val manga = manga ?: return PanelFlagOutcome.Failed
+        val chapter = page.chapter.chapter
+        val direction = (state.value.viewer as? PanelByPanelViewer)?.panelDirection ?: return PanelFlagOutcome.Failed
+        return panelFlagExporter.export(
+            mangaTitle = manga.title,
+            chapterName = chapter.name,
+            chapterId = chapter.id,
+            page = page,
+            direction = direction,
+            reason = reason,
+        )
+    }
+
     fun openSettingsDialog() {
         mutableState.update { it.copy(dialog = Dialog.Settings) }
     }
@@ -1189,6 +1302,9 @@ class ReaderViewModel(
 
         /** Whether the page currently open in [Dialog.PageActions] is marked to always show whole. */
         val isPanelFullPageOverridden: Boolean = false,
+
+        /** Whether the currently visible page is marked as good panel-detection data — see [toggleCurrentPageGoodFlag]. */
+        val isCurrentPageMarkedGood: Boolean = false,
     ) {
         val currentChapter: ReaderChapter?
             get() = viewerChapters?.currChapter
@@ -1207,6 +1323,13 @@ class ReaderViewModel(
         data object OrientationModeSelect : Dialog
         data object PageGrid : Dialog
         data class PageActions(val page: ReaderPage) : Dialog
+
+        /**
+         * The panel-flag reason picker — reachable both from [PageActions]' "Flag for review"
+         * button and directly from the bottom bar's thumbs-down button, so it carries its own
+         * target [page] rather than depending on [PageActions] being open.
+         */
+        data class PanelFlagPicker(val page: ReaderPage) : Dialog
     }
 
     sealed interface Event {
@@ -1226,5 +1349,8 @@ class ReaderViewModel(
          * to the old (single, full-page) stop's centre.
          */
         data class RefreshPanelDetection(val page: ReaderPage, val forceFirstStop: Boolean) : Event
+
+        /** Result of [flagPageForPanelReview] — whether the export to external storage succeeded. */
+        data class PanelFlagged(val messageRes: StringResource) : Event
     }
 }

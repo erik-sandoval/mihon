@@ -27,6 +27,7 @@ import eu.kanade.tachiyomi.data.library.MetadataUpdateJob
 import eu.kanade.tachiyomi.data.notification.NotificationReceiver
 import eu.kanade.tachiyomi.data.reader.PanelCacheRepository
 import eu.kanade.tachiyomi.data.reader.PanelFullPageOverrideRepository
+import eu.kanade.tachiyomi.data.reader.PanelGoodFlagRepository
 import eu.kanade.tachiyomi.data.track.TrackerManager
 import eu.kanade.tachiyomi.data.updater.AppUpdateChecker
 import eu.kanade.tachiyomi.extension.ExtensionManager
@@ -37,6 +38,7 @@ import eu.kanade.tachiyomi.ui.base.delegate.SecureActivityDelegateImpl
 import eu.kanade.tachiyomi.ui.main.MainActivity
 import eu.kanade.tachiyomi.ui.reader.ReaderActivity
 import eu.kanade.tachiyomi.ui.reader.setting.ReaderPreferences
+import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelFlagExporter
 import eu.kanade.tachiyomi.ui.setting.track.BaseOAuthLoginActivity
 import eu.kanade.tachiyomi.ui.webview.WebViewActivity
 import eu.kanade.tachiyomi.util.CrashLogUtil
@@ -97,6 +99,8 @@ interface AppGraph : ViewModelGraph {
     val downloadManager: DownloadManager
     val panelCacheRepository: PanelCacheRepository
     val panelFullPageOverrideRepository: PanelFullPageOverrideRepository
+    val panelGoodFlagRepository: PanelGoodFlagRepository
+    val panelFlagExporter: PanelFlagExporter
     val mangaRepository: MangaRepository
 
     val updateChecker: AppUpdateChecker

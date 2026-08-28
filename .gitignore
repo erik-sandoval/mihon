@@ -25,3 +25,5 @@ local.properties
 
 # Subagent-driven-development scratch workspace (ledgers, briefs, review packages)
 .superpowers/
+
+panel_flags_pulled

@@ -117,6 +117,11 @@ class PanelDetector(
         //     side-by-side full-height columns as a stacked pair and used a bubble from one column
         //     to slice a chunk off the bottom of the other, and consolidateFragments over-merged
         //     distinct panels (2 pre-existing regression tests failed against it).
-        private const val DETECTOR_VERSION = 52
+        // 53: Evidence-gathering bump only (forced fresh detection so panelDebug raw bubbles= logs
+        //     fire for Blue Lock ch.2 p59/p38, to check whether the model detects rectangular
+        //     narration-caption boxes as class-1 Text at all, vs. round speech bubbles).
+        // Not private: PanelFlagExporter labels its exports with this so a future re-run against a
+        // newer model/pipeline version can tell which flags predate it.
+        const val DETECTOR_VERSION = 53
     }
 }

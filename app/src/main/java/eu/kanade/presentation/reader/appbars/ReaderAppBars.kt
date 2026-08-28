@@ -76,6 +76,9 @@ fun ReaderAppBars(
     onClickSettings: () -> Unit,
     isPanelByPanel: Boolean = false,
     onClickPageGrid: () -> Unit = {},
+    isPageMarkedGood: Boolean = false,
+    onClickMarkGood: () -> Unit = {},
+    onClickFlagBad: () -> Unit = {},
     upscalingEnabled: Boolean = false,
     onClickToggleUpscaling: () -> Unit = {},
 ) {
@@ -179,6 +182,9 @@ fun ReaderAppBars(
                     onClickSettings = onClickSettings,
                     isPanelByPanel = isPanelByPanel,
                     onClickPageGrid = onClickPageGrid,
+                    isPageMarkedGood = isPageMarkedGood,
+                    onClickMarkGood = onClickMarkGood,
+                    onClickFlagBad = onClickFlagBad,
                     upscalingEnabled = upscalingEnabled,
                     onClickToggleUpscaling = onClickToggleUpscaling,
                 )

@@ -58,6 +58,7 @@ import eu.kanade.domain.base.BasePreferences
 import eu.kanade.domain.manga.model.upscaleEnabledOverride
 import eu.kanade.presentation.reader.DisplayRefreshHost
 import eu.kanade.presentation.reader.OrientationSelectDialog
+import eu.kanade.presentation.reader.PanelFlagReasonPickerDialog
 import eu.kanade.presentation.reader.PanelPageGridSheet
 import eu.kanade.presentation.reader.ReaderContentOverlay
 import eu.kanade.presentation.reader.ReaderPageActionsDialog
@@ -304,6 +305,9 @@ class ReaderActivity : BaseActivity() {
                             forceFirstStop = event.forceFirstStop,
                         )
                     }
+                    is ReaderViewModel.Event.PanelFlagged -> {
+                        toast(event.messageRes)
+                    }
                 }
             }
             .launchIn(lifecycleScope)
@@ -490,6 +494,13 @@ class ReaderActivity : BaseActivity() {
                     onToggleFullPageOverride = viewModel::toggleFullPageOverride,
                     showDebugOrder = showDebugOrder,
                     onToggleDebugOrder = { readerPreferences.panelByPanelShowDebugOrder.set(!showDebugOrder) },
+                    onOpenFlagReasonPicker = viewModel::openPanelFlagPicker,
+                )
+            }
+            is ReaderViewModel.Dialog.PanelFlagPicker -> {
+                PanelFlagReasonPickerDialog(
+                    onSelect = viewModel::flagPageForPanelReview,
+                    onDismiss = onDismissRequest,
                 )
             }
             is ReaderViewModel.Dialog.PageGrid -> {
@@ -773,6 +784,9 @@ class ReaderActivity : BaseActivity() {
             onClickSettings = viewModel::openSettingsDialog,
             isPanelByPanel = state.viewer is PanelByPanelViewer,
             onClickPageGrid = viewModel::openPageGridDialog,
+            isPageMarkedGood = state.isCurrentPageMarkedGood,
+            onClickMarkGood = viewModel::toggleCurrentPageGoodFlag,
+            onClickFlagBad = viewModel::openPanelFlagPicker,
             upscalingEnabled = upscalingEnabled,
             onClickToggleUpscaling = {
                 val newOverride = if (upscalingEnabled) UpscaleEnabledOverride.DISABLED else UpscaleEnabledOverride.ENABLED

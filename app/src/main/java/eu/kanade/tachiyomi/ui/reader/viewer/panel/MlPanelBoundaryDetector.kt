@@ -35,7 +35,8 @@ class MlPanelBoundaryDetector private constructor(
 
     fun detect(page: Bitmap, rightToLeft: Boolean, label: String = ""): List<Panel> = synchronized(lock) {
         val result = try {
-            run(page)
+            val out = runInference(page)
+            decoder.decode(out.raw, out.shape, out.lb, out.pageW, out.pageH)
         } catch (t: Throwable) {
             logcat(LogPriority.ERROR, t) { "ML panel inference failed" }
             DetectResult(emptyList(), emptyList(), page.width, page.height)
@@ -49,8 +50,25 @@ class MlPanelBoundaryDetector private constructor(
         PanelPipeline.associateBubbles(finalPanels, result.bubbles, rightToLeft)
     }
 
-    /** ML detections for one page, normalized to [0,1]; page dimensions are in pixels. */
-    private fun run(page: Bitmap): DetectResult {
+    /**
+     * Every box the model scored above [YoloPanelDecoder.DIAGNOSTIC_CONFIDENCE] for [page],
+     * including near-misses [detect] would silently drop — used only by the panel-flag evidence
+     * exporter, never the normal detection/display path.
+     */
+    fun diagnose(page: Bitmap): List<ScoredBox> = synchronized(lock) {
+        try {
+            val out = runInference(page)
+            decoder.decodeDiagnostic(out.raw, out.shape, out.lb, out.pageW, out.pageH)
+        } catch (t: Throwable) {
+            logcat(LogPriority.ERROR, t) { "ML panel diagnostic inference failed" }
+            emptyList()
+        }
+    }
+
+    private data class InferenceOutput(val raw: FloatArray, val shape: IntArray, val lb: Letterbox, val pageW: Int, val pageH: Int)
+
+    /** Runs the model on [page] and returns its raw output tensor, undecoded. Shared by [detect] and [diagnose]. */
+    private fun runInference(page: Bitmap): InferenceOutput {
         val bw = page.width
         val bh = page.height
         val lb = Letterbox.fit(bw, bh, inputSize)
@@ -63,7 +81,7 @@ class MlPanelBoundaryDetector private constructor(
         interpreter.run(input, outBuf)
 
         val raw = readFloats(outBuf, outputTensor)
-        return decoder.decode(raw, outputTensor.shape(), lb, bw, bh)
+        return InferenceOutput(raw, outputTensor.shape(), lb, bw, bh)
     }
 
     /** Fills the model input buffer with the letterboxed RGB image (handles float or quantized). */

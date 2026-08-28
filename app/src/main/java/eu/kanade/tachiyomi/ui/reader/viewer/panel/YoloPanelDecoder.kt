@@ -1,5 +1,7 @@
 package eu.kanade.tachiyomi.ui.reader.viewer.panel
 
+import kotlinx.serialization.Serializable
+
 /**
  * Letterbox geometry for fitting a [pageW]×[pageH] image into a square `inputSize` model input,
  * preserving aspect with centered gray padding (YOLO's standard preprocessing). Used to build the
@@ -32,6 +34,16 @@ data class DetectResult(
 )
 
 /**
+ * A single raw detection with its confidence score and class, in normalized page coordinates.
+ * Only [YoloPanelDecoder.decodeDiagnostic] produces these — the normal [YoloPanelDecoder.decode]
+ * path discards score/class once a box is sorted into panels vs. bubbles, since nothing in the
+ * display pipeline needs them. Used by the panel-flag evidence exporter, where seeing a low-score
+ * near-miss (vs. no candidate at all) is the whole point.
+ */
+@Serializable
+data class ScoredBox(val rect: PanelRect, val score: Float, val cls: Int)
+
+/**
  * Decodes a YOLO panel/text detector's raw output tensor into [PanelRect]s in normalized page
  * coordinates. Class 0 = Panel, class 1 = Text/speech-balloon.
  *
@@ -50,7 +62,45 @@ class YoloPanelDecoder(
 ) {
 
     fun decode(raw: FloatArray, shape: IntArray, lb: Letterbox, pageW: Int, pageH: Int): DetectResult {
-        if (shape.size != 3) return DetectResult(emptyList(), emptyList(), pageW, pageH)
+        val (panelBoxes, bubbleBoxes) = collectBoxes(raw, shape, confidenceThreshold)
+        // Suppress overlapping/nested duplicates within each class.
+        val panels = toPanels(suppress(panelBoxes), lb, pageW, pageH, minAreaFraction, minSideFraction)
+        val bubbles = toPanels(suppress(bubbleBoxes), lb, pageW, pageH, 0f, 0f)
+        return DetectResult(panels, bubbles, pageW, pageH)
+    }
+
+    /**
+     * Like [decode], but for the panel-flag evidence exporter rather than the display pipeline:
+     * keeps each box's score and class, filters against [minConfidence] instead of the normal
+     * (much higher) display [confidenceThreshold], and skips the min-area/min-side filtering
+     * [toPanels] applies for real panels — a flagged page should show every surviving candidate,
+     * however small or low-confidence, not just what's fit to display. Still runs the same
+     * per-class NMS suppression as [decode], so near-duplicate anchors on the same real object
+     * don't flood the result.
+     */
+    fun decodeDiagnostic(
+        raw: FloatArray,
+        shape: IntArray,
+        lb: Letterbox,
+        pageW: Int,
+        pageH: Int,
+        minConfidence: Float = DIAGNOSTIC_CONFIDENCE,
+    ): List<ScoredBox> {
+        val (panelBoxes, bubbleBoxes) = collectBoxes(raw, shape, minConfidence)
+        val panels = suppress(panelBoxes).mapNotNull { toScoredBox(it, lb, pageW, pageH, PANEL_CLASS) }
+        val bubbles = suppress(bubbleBoxes).mapNotNull { toScoredBox(it, lb, pageW, pageH, TEXT_CLASS) }
+        return panels + bubbles
+    }
+
+    /**
+     * Parses the raw output tensor into per-class candidate boxes in input-pixel space
+     * (`x1,y1,x2,y2,score`), filtered to [minConfidence] and the two known classes. Shared by
+     * [decode] and [decodeDiagnostic], which differ only in that filter threshold and in what
+     * they do with the result afterward.
+     */
+    private fun collectBoxes(raw: FloatArray, shape: IntArray, minConfidence: Float): Pair<List<FloatArray>, List<FloatArray>> {
+        val empty = emptyList<FloatArray>() to emptyList<FloatArray>()
+        if (shape.size != 3) return empty
         val d1 = shape[1]
         val d2 = shape[2]
         val transposed = d1 < d2 // [1, attrs, anchors]
@@ -58,7 +108,7 @@ class YoloPanelDecoder(
         val preds = if (transposed) d2 else d1
         fun at(pred: Int, attr: Int) = if (transposed) raw[attr * preds + pred] else raw[pred * attrs + attr]
 
-        if (attrs < 6) return DetectResult(emptyList(), emptyList(), pageW, pageH)
+        if (attrs < 6) return empty
 
         val endToEnd = preds <= 1000
 
@@ -86,7 +136,7 @@ class YoloPanelDecoder(
                 val cls0 = at(i, 4); val cls1 = at(i, 5)
                 if (cls0 >= cls1) { cls = PANEL_CLASS; score = cls0 } else { cls = TEXT_CLASS; score = cls1 }
             }
-            if (score < confidenceThreshold || (cls != PANEL_CLASS && cls != TEXT_CLASS)) continue
+            if (score < minConfidence || (cls != PANEL_CLASS && cls != TEXT_CLASS)) continue
 
             val a = at(i, 0) * coordScale
             val b = at(i, 1) * coordScale
@@ -98,11 +148,7 @@ class YoloPanelDecoder(
             val box = floatArrayOf(x1, y1, x2, y2, score)
             if (cls == PANEL_CLASS) panelBoxes.add(box) else bubbleBoxes.add(box)
         }
-
-        // Suppress overlapping/nested duplicates within each class.
-        val panels = toPanels(suppress(panelBoxes), lb, pageW, pageH, minAreaFraction, minSideFraction)
-        val bubbles = toPanels(suppress(bubbleBoxes), lb, pageW, pageH, 0f, 0f)
-        return DetectResult(panels, bubbles, pageW, pageH)
+        return panelBoxes to bubbleBoxes
     }
 
     /** Filters by min area, undoes the letterbox, and normalizes boxes to [0,1] page coordinates. */
@@ -119,15 +165,26 @@ class YoloPanelDecoder(
             val w = (box[2] - box[0]).coerceAtLeast(0f)
             val h = (box[3] - box[1]).coerceAtLeast(0f)
             if (w * h < minArea) return@mapNotNull null
-            val l = ((box[0] - lb.padX) / lb.scale / pageW).coerceIn(0f, 1f)
-            val t = ((box[1] - lb.padY) / lb.scale / pageH).coerceIn(0f, 1f)
-            val r = ((box[2] - lb.padX) / lb.scale / pageW).coerceIn(0f, 1f)
-            val bo = ((box[3] - lb.padY) / lb.scale / pageH).coerceIn(0f, 1f)
-            if (r <= l || bo <= t) return@mapNotNull null
-            PanelRect(l, t, r, bo)
+            undoLetterbox(box, lb, pageW, pageH)
         }
         if (minSideFrac <= 0f) return rects
         return mergeSlivers(rects, minSideFrac)
+    }
+
+    /** Undoes the letterbox and normalizes an input-pixel-space box to [0,1] page coordinates. */
+    private fun undoLetterbox(box: FloatArray, lb: Letterbox, pageW: Int, pageH: Int): PanelRect? {
+        val l = ((box[0] - lb.padX) / lb.scale / pageW).coerceIn(0f, 1f)
+        val t = ((box[1] - lb.padY) / lb.scale / pageH).coerceIn(0f, 1f)
+        val r = ((box[2] - lb.padX) / lb.scale / pageW).coerceIn(0f, 1f)
+        val bo = ((box[3] - lb.padY) / lb.scale / pageH).coerceIn(0f, 1f)
+        if (r <= l || bo <= t) return null
+        return PanelRect(l, t, r, bo)
+    }
+
+    /** Like [undoLetterbox], but preserves the box's score/class for [decodeDiagnostic]. */
+    private fun toScoredBox(box: FloatArray, lb: Letterbox, pageW: Int, pageH: Int, cls: Int): ScoredBox? {
+        val rect = undoLetterbox(box, lb, pageW, pageH) ?: return null
+        return ScoredBox(rect, box[4], cls)
     }
 
     /**
@@ -240,6 +297,14 @@ class YoloPanelDecoder(
         const val DEFAULT_MIN_AREA_FRACTION = 0.008f
         /** Panel detections whose narrower side is under this fraction of the page are merged into a neighbor. */
         const val DEFAULT_MIN_SIDE_FRACTION = 0.08f
+        /**
+         * Default confidence floor for [decodeDiagnostic] — far below [DEFAULT_CONFIDENCE], since
+         * its whole purpose is showing near-misses the display pipeline would otherwise hide
+         * entirely, not just what's confident enough to show. Not zero: at true zero the raw
+         * anchor grid is mostly background noise, which would bury the near-misses actually worth
+         * seeing rather than surface them.
+         */
+        const val DIAGNOSTIC_CONFIDENCE = 0.05f
         /** How strongly a gap between a sliver and a candidate panel counts against that candidate in [bestHost]. */
         const val GAP_PENALTY = 2f
         /** How strongly a candidate panel's own size counts against it in [bestHost] (tiebreak only). */

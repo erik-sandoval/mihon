@@ -3,9 +3,11 @@ package eu.kanade.presentation.reader
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.padding
 import androidx.compose.material.icons.Icons
 import androidx.compose.material.icons.outlined.ContentCopy
+import androidx.compose.material.icons.outlined.Flag
 import androidx.compose.material.icons.outlined.Fullscreen
 import androidx.compose.material.icons.outlined.FullscreenExit
 import androidx.compose.material.icons.outlined.GridOff
@@ -41,6 +43,7 @@ fun ReaderPageActionsDialog(
     onToggleFullPageOverride: () -> Unit = {},
     showDebugOrder: Boolean = false,
     onToggleDebugOrder: () -> Unit = {},
+    onOpenFlagReasonPicker: () -> Unit = {},
 ) {
     var showSetCoverDialog by remember { mutableStateOf(false) }
 
@@ -114,6 +117,17 @@ fun ReaderPageActionsDialog(
                             onToggleDebugOrder()
                             onDismissRequest()
                         },
+                    )
+                    ActionButton(
+                        modifier = Modifier.weight(1f),
+                        title = stringResource(MR.strings.action_flag_panel_review),
+                        icon = Icons.Outlined.Flag,
+                        // No onDismissRequest() here — that's wired to viewModel::closeDialog
+                        // (an unconditional null-out), and calling it after opening the picker
+                        // would immediately close the dialog state onOpenFlagReasonPicker just
+                        // set. Swapping `dialog` to PanelFlagPicker already un-mounts this sheet
+                        // on its own, same as any other dialog-to-dialog transition in this screen.
+                        onClick = onOpenFlagReasonPicker,
                     )
                 }
             }

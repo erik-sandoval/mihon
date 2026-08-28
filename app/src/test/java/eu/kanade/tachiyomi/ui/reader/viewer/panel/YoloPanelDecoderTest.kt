@@ -221,4 +221,65 @@ class YoloPanelDecoderTest {
         assertTrue(decoder.decode(FloatArray(10), intArrayOf(10), lb, 640, 640).panels.isEmpty())
         assertTrue(decoder.decode(FloatArray(10), intArrayOf(1, 5, 2), lb, 640, 640).panels.isEmpty())
     }
+
+    // decodeDiagnostic: used only by the panel-flag evidence exporter, never the normal detection
+    // path — it trades the display pipeline's filtering for maximum visibility into what the model
+    // actually scored, so a flagged page can show near-misses instead of just silent absence.
+
+    @Test
+    fun diagnosticKeepsABoxBelowTheNormalDisplayThresholdButAboveItsOwnFloor() {
+        val lb = Letterbox.fit(640, 640, 640)
+        // 0.15 < normal DEFAULT_CONFIDENCE (0.25), so decode() would drop this entirely.
+        val (raw, shape) = endToEnd(listOf(floatArrayOf(64f, 64f, 320f, 320f, 0.15f, 1f)))
+        assertTrue(decoder.decode(raw, shape, lb, 640, 640).bubbles.isEmpty())
+
+        val diagnostic = decoder.decodeDiagnostic(raw, shape, lb, 640, 640)
+        assertEquals(1, diagnostic.size)
+        assertEquals(YoloPanelDecoder.TEXT_CLASS, diagnostic.single().cls)
+        near(0.15f, diagnostic.single().score, 0.001f)
+    }
+
+    @Test
+    fun diagnosticDropsBoxesBelowItsOwnFloor() {
+        val lb = Letterbox.fit(640, 640, 640)
+        val (raw, shape) = endToEnd(listOf(floatArrayOf(64f, 64f, 320f, 320f, 0.01f, 1f)))
+        assertTrue(decoder.decodeDiagnostic(raw, shape, lb, 640, 640).isEmpty())
+    }
+
+    @Test
+    fun diagnosticSkipsMinAreaFiltering() {
+        // Same 10x10px box that tinyPanelsAreFilteredByMinArea confirms decode() drops — diagnostic
+        // mode wants visibility into every surviving candidate, however small.
+        val lb = Letterbox.fit(640, 640, 640)
+        val (raw, shape) = endToEnd(listOf(floatArrayOf(0f, 0f, 10f, 10f, 0.9f, 0f)))
+        assertTrue(decoder.decode(raw, shape, lb, 640, 640).panels.isEmpty())
+        assertEquals(1, decoder.decodeDiagnostic(raw, shape, lb, 640, 640).size)
+    }
+
+    @Test
+    fun diagnosticStillDeduplicatesNearIdenticalDetections() {
+        val lb = Letterbox.fit(640, 640, 640)
+        val (raw, shape) = endToEnd(
+            listOf(
+                floatArrayOf(50f, 50f, 400f, 400f, 0.95f, 0f), // outer, higher score
+                floatArrayOf(60f, 60f, 390f, 390f, 0.90f, 0f), // mostly contained → still suppressed
+            ),
+        )
+        assertEquals(1, decoder.decodeDiagnostic(raw, shape, lb, 640, 640).size)
+    }
+
+    @Test
+    fun diagnosticReturnsBothPanelAndTextClassesTogether() {
+        val lb = Letterbox.fit(640, 640, 640)
+        val (raw, shape) = endToEnd(
+            listOf(
+                floatArrayOf(64f, 128f, 320f, 384f, 0.9f, 0f), // panel
+                floatArrayOf(400f, 100f, 480f, 200f, 0.8f, 1f), // text/bubble
+            ),
+        )
+        val boxes = decoder.decodeDiagnostic(raw, shape, lb, 640, 640)
+        assertEquals(2, boxes.size)
+        assertEquals(1, boxes.count { it.cls == YoloPanelDecoder.PANEL_CLASS })
+        assertEquals(1, boxes.count { it.cls == YoloPanelDecoder.TEXT_CLASS })
+    }
 }

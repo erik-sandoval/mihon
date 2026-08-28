@@ -1,0 +1,7 @@
+CREATE TABLE panel_good_flag(
+    chapter_id INTEGER NOT NULL,
+    page_index INTEGER NOT NULL,
+    PRIMARY KEY (chapter_id, page_index),
+    FOREIGN KEY(chapter_id) REFERENCES chapters (_id)
+    ON DELETE CASCADE
+);

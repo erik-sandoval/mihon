@@ -3,7 +3,10 @@ package eu.kanade.presentation.reader.appbars
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Row
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.filled.ThumbUp
 import androidx.compose.material.icons.outlined.Settings
+import androidx.compose.material.icons.outlined.ThumbDown
+import androidx.compose.material.icons.outlined.ThumbUp
 import androidx.compose.material3.Icon
 import androidx.compose.material3.IconButton
 import androidx.compose.runtime.Composable
@@ -29,6 +32,9 @@ fun ReaderBottomBar(
     modifier: Modifier = Modifier,
     isPanelByPanel: Boolean = false,
     onClickPageGrid: () -> Unit = {},
+    isPageMarkedGood: Boolean = false,
+    onClickMarkGood: () -> Unit = {},
+    onClickFlagBad: () -> Unit = {},
     upscalingEnabled: Boolean = false,
     onClickToggleUpscaling: () -> Unit = {},
 ) {
@@ -57,6 +63,25 @@ fun ReaderBottomBar(
                 Icon(
                     painter = painterResource(R.drawable.ic_grid_view_24dp),
                     contentDescription = stringResource(MR.strings.action_page_grid),
+                )
+            }
+            IconButton(onClick = onClickMarkGood) {
+                Icon(
+                    imageVector = if (isPageMarkedGood) Icons.Filled.ThumbUp else Icons.Outlined.ThumbUp,
+                    contentDescription = stringResource(
+                        if (isPageMarkedGood) MR.strings.action_unflag_panel_good else MR.strings.action_flag_panel_good,
+                    ),
+                )
+            }
+            // Unlike thumbs-up, this never fills/toggles — a bad flag is an append-only report
+            // (any number of reasons, any number of times), not a single piece of page state, so
+            // there's no one "is this page flagged bad" boolean to reflect. It just opens the
+            // reason picker directly, same destination as the page-actions sheet's "Flag for
+            // review" button, without the extra long-press hop.
+            IconButton(onClick = onClickFlagBad) {
+                Icon(
+                    imageVector = Icons.Outlined.ThumbDown,
+                    contentDescription = stringResource(MR.strings.action_flag_panel_review),
                 )
             }
         } else {
