@@ -1,0 +1,1440 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, user-scalable=no">
+<title>Panel Ground Truth Labeler</title>
+<style>
+  :root {
+    color-scheme: dark;
+    --bg: #121212;
+    --panel-color: #4da3ff;
+    --text-color: #ff9d4d;
+    --accent: #6ee7a7;
+    --danger: #ff5d5d;
+    --surface: #1e1e1e;
+    --surface-2: #262626;
+    --border: #3a3a3a;
+  }
+  * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+  html, body {
+    margin: 0; padding: 0; height: 100%;
+    background: var(--bg); color: #eee;
+    font: 14px/1.4 system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+    overscroll-behavior: none;
+  }
+  #app { display: flex; flex-direction: column; height: 100dvh; }
+
+  header {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    padding: 8px 10px; background: var(--surface); border-bottom: 1px solid var(--border);
+    z-index: 5;
+  }
+  header .spacer { flex: 1 1 auto; }
+  header .status { font-size: 12px; color: #aaa; white-space: nowrap; }
+
+  button {
+    font: inherit; background: var(--surface-2); color: #eee; border: 1px solid var(--border);
+    border-radius: 6px; padding: 8px 12px; min-height: 40px; cursor: pointer;
+  }
+  button:active { background: #333; }
+  button.primary { background: #2f6fd6; border-color: #2f6fd6; color: #fff; }
+  button.primary:active { background: #2559ad; }
+  button.toggled { background: var(--accent); border-color: var(--accent); color: #062; }
+  button:disabled { opacity: 0.4; cursor: default; }
+  input[type=file] { display: none; }
+
+  main {
+    flex: 1 1 auto; overflow: hidden;
+    display: flex; flex-direction: row; align-items: stretch;
+  }
+
+  #canvasArea {
+    flex: 1 1 auto; position: relative; overflow: hidden; min-width: 0;
+    background: #0a0a0a; touch-action: none;
+    display: flex; align-items: center; justify-content: center;
+  }
+
+  /* Roboflow-style annotation list: every box on the page, clickable, colored/numbered to match
+     its badge on the canvas — the direct fix for "hard to select when boxes are stacked", since
+     you're picking from a list instead of hunting for a precise tap target. Always visible as a
+     permanent column (not a toggleable drawer) — up/down reordering only makes sense as something
+     you can reach without an extra open/close step. */
+  #sidebar {
+    flex: 0 0 min(300px, 42vw); min-width: 0;
+    background: var(--surface); border-left: 1px solid var(--border);
+    display: flex; flex-direction: column; overflow: hidden;
+  }
+  .sidebar-header {
+    display: flex; align-items: center; justify-content: space-between;
+    padding: 10px 12px; border-bottom: 1px solid var(--border);
+  }
+  .sidebar-header h2 { font-size: 14px; margin: 0; }
+  .sidebar-header .header-hint { font-size: 11px; color: #999; }
+  .sidebar-header .collapse-btn {
+    background: none; border: none; color: #999; min-height: auto; padding: 2px 6px; font-size: 14px;
+  }
+  .sidebar-section { padding: 10px 12px; border-bottom: 1px solid var(--border); }
+  .sidebar-label { font-size: 11px; color: #999; text-transform: uppercase; letter-spacing: 0.04em; margin-bottom: 6px; }
+  /* Used for the Panels/Text list headers, which sit directly in #sidebar's flow (not inside a
+     padded .sidebar-section), so they carry their own padding instead of inheriting the section's. */
+  .sidebar-label.standalone { padding: 10px 12px 6px; margin-bottom: 0; }
+  .class-row { display: block; width: 100%; text-align: left; margin-bottom: 6px; }
+  .class-row:last-child { margin-bottom: 0; }
+
+  /* --- Pages panel: every loaded file, its done/unsaved/untouched status, and a jump-to-page
+     click — the "file explorer" for the batch, separate from the per-page Panels/Text lists
+     below. Bounded height + its own scroll so a large batch doesn't push the box lists off
+     screen; collapsible for when you just want the box lists front and center. */
+  #pagesSection.collapsed { display: none; }
+  .pages-filter { display: flex; align-items: center; gap: 6px; font-size: 12px; color: #aaa; margin-bottom: 8px; }
+  #pageListWrap { max-height: 220px; overflow-y: auto; }
+  #pageListEmpty { color: #777; font-size: 12px; padding: 10px; text-align: center; }
+  .page-list-item {
+    display: flex; align-items: center; gap: 8px; padding: 6px; border-radius: 6px;
+    cursor: pointer; margin-bottom: 4px; border: 1px solid transparent;
+  }
+  .page-list-item:hover { background: var(--surface-2); }
+  .page-list-item.current { background: var(--surface-2); border-color: #fff; }
+  .page-thumb { width: 32px; height: 44px; object-fit: cover; border-radius: 3px; flex: 0 0 auto; background: #000; }
+  .page-info { flex: 1 1 auto; min-width: 0; }
+  .page-name { font-size: 12px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .page-status { font-size: 11px; color: #999; display: flex; align-items: center; gap: 5px; margin-top: 2px; }
+  .page-status-dot { width: 8px; height: 8px; border-radius: 50%; flex: 0 0 auto; }
+  .page-status-dot.done { background: var(--accent); }
+  .page-status-dot.unsaved { background: #ffd24d; }
+  .page-status-dot.untouched { background: #555; }
+
+  /* --- Panels / Text box lists: same row style as before, just each in its own independently
+     scrolling half of the remaining sidebar space instead of one combined list. */
+  .class-list-wrap { flex: 1 1 0; min-height: 60px; overflow-y: auto; padding: 6px; }
+  .list-empty { color: #777; font-size: 12px; padding: 10px; text-align: center; }
+  .box-list-item {
+    display: flex; align-items: center; gap: 8px; padding: 8px; border-radius: 6px;
+    cursor: pointer; margin-bottom: 4px; border: 1px solid transparent;
+    transition: transform 0.15s ease;
+  }
+  .box-list-item:hover { background: var(--surface-2); }
+  .box-list-item.selected { background: var(--surface-2); border-color: #fff; }
+  /* Dragged row: no transition (it must track the pointer with zero lag) and floats above its
+     siblings, which animate out of the way via their own (still-transitioning) transform. */
+  .box-list-item.dragging {
+    transition: none; z-index: 50; position: relative;
+    background: var(--surface-2); box-shadow: 0 6px 16px rgba(0,0,0,0.5); cursor: grabbing;
+  }
+  .box-list-item .chip {
+    width: 26px; height: 26px; border-radius: 6px; flex: 0 0 auto;
+    display: flex; align-items: center; justify-content: center;
+    font-size: 12px; font-weight: 800; color: #000;
+  }
+  .box-list-item .label { flex: 1 1 auto; font-size: 13px; }
+  /* Drag handle — press and drag to a new position, instead of repeated up/down taps. touch-action:
+     none stops the list's own scroll gesture from competing with the drag on mobile. Hidden (not
+     display:none, so the row's layout doesn't jump) until the row is selected, to keep the list
+     uncluttered — visibility:hidden also means it can't be pressed while hidden. */
+  .box-list-item .dragHandle {
+    flex: 0 0 auto; width: 28px; height: 32px; display: flex; align-items: center; justify-content: center;
+    color: #888; font-size: 16px; letter-spacing: -1px; cursor: grab; touch-action: none; user-select: none;
+    visibility: hidden;
+  }
+  .box-list-item.selected .dragHandle { visibility: visible; }
+  .box-list-item .dragHandle:hover { color: #fff; }
+  .box-list-item .rowDelete {
+    background: none; border: none; color: #888; min-height: auto; padding: 4px 8px; font-size: 14px;
+  }
+  .box-list-item .rowDelete:hover { color: var(--danger); }
+  /* min-width: 0 overrides a flex item's default min-width:auto, which otherwise refuses to
+     shrink below the text's own preferred width and lets it overflow main's edge instead of
+     wrapping — confirmed via headless screenshot before this fix, at a 390px mobile width. */
+  #emptyState { color: #888; text-align: center; padding: 24px; max-width: 420px; min-width: 0; box-sizing: border-box; }
+  #emptyState h1 { font-size: 16px; color: #ddd; }
+  #emptyState p { font-size: 13px; }
+
+  #viewport {
+    position: absolute; inset: 0; overflow: hidden; touch-action: none;
+  }
+  /* Open-hand cursor whenever a drag here would pan (Pan mode on, or Ctrl held), closed-hand while
+     a pan is actually in progress. The descendant override is needed because boxes/handles/the
+     drag grip set their own explicit cursors that would otherwise win while panning through them. */
+  #viewport.pan-ready { cursor: grab; }
+  #viewport.panning, #viewport.panning * { cursor: grabbing !important; }
+  /* Holding P or T while dragging force-draws that class of box, even starting on top of existing
+     boxes — the fix for a densely-covered page where a plain drag would otherwise grab whatever
+     box is underneath instead of drawing a new one. */
+  #viewport.draw-ready, #viewport.draw-ready * { cursor: crosshair !important; }
+  #content {
+    position: absolute; top: 0; left: 0; transform-origin: 0 0;
+  }
+  #pageImg {
+    display: block; max-width: none; user-select: none; -webkit-user-drag: none;
+  }
+  #boxLayer {
+    position: absolute; inset: 0;
+  }
+
+  /* Border color is per-box (assigned from a distinct-hue palette by index, inline via JS) so
+     adjacent/overlapping boxes are visually distinguishable from each other, not just by class —
+     mirrors the app's own "Show panel order" debug overlay. Class is still shown via border style
+     (solid panel / dashed text) plus the number badge's suffix letter. */
+  .box {
+    position: absolute; border-width: 3px; border-style: solid; background: rgba(255,255,255,0.05);
+    touch-action: none; transition: opacity 0.12s ease;
+  }
+  .box.text { border-style: dashed; }
+  /* z-index lifts the selected box (and its handles) above whatever sibling happens to paint over
+     it in normal DOM order — without this, a box selected underneath another one had its handles
+     visually and functionally covered, even though resizing still worked if you could reach them. */
+  .box.selected { box-shadow: 0 0 0 2px #fff inset; z-index: 100; }
+  /* Fade every other box while one is selected, so the box you're actively adjusting (drag/resize)
+     stands out against overlapping neighbors instead of fighting them for attention. */
+  #boxLayer.has-selection .box:not(.selected) { opacity: 0.3; }
+  .box .handle {
+    position: absolute; width: 22px; height: 22px; margin: -11px;
+    border-radius: 50%; background: #fff; border: 2px solid #000;
+    touch-action: none;
+  }
+  .box .handle.nw { left: 0; top: 0; cursor: nwse-resize; }
+  .box .handle.ne { left: 100%; top: 0; cursor: nesw-resize; }
+  .box .handle.sw { left: 0; top: 100%; cursor: nesw-resize; }
+  .box .handle.se { left: 100%; top: 100%; cursor: nwse-resize; }
+  /* Edge midpoints — adjust one side only, unlike a corner which always moves two at once. The
+     resize math already keys off corner.includes('n'/'s'/'w'/'e'), so a single-letter corner
+     value here ('n', not 'nw') naturally only touches that one side, no logic changes needed. */
+  .box .handle.n { left: 50%; top: 0; cursor: ns-resize; }
+  .box .handle.s { left: 50%; top: 100%; cursor: ns-resize; }
+  .box .handle.w { left: 0; top: 50%; cursor: ew-resize; }
+  .box .handle.e { left: 100%; top: 50%; cursor: ew-resize; }
+  .box .tag {
+    position: absolute; top: -24px; left: -3px; font-size: 14px; font-weight: 800;
+    padding: 2px 7px; border-radius: 4px; color: #000;
+    pointer-events: none; white-space: nowrap; box-shadow: 0 1px 4px rgba(0,0,0,0.7);
+  }
+
+  /* Docked to a fixed strip at the top of the canvas rather than floating next to the selected
+     box — following the selection around meant it regularly covered a neighboring box in a dense
+     layout, blocking taps meant for it. A fixed strip can never overlap anything in #boxLayer. */
+  #boxToolbar {
+    position: absolute; top: 0; left: 0; right: 0; display: none; align-items: center; gap: 4px; z-index: 10;
+    background: var(--surface); border-bottom: 1px solid var(--border); padding: 6px 8px;
+  }
+  #boxToolbar button { min-height: 32px; padding: 4px 8px; font-size: 12px; }
+  #stackHint { font-size: 11px; color: #aaa; align-self: center; padding: 0 4px; white-space: nowrap; }
+
+  footer {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center; justify-content: space-between;
+    padding: 8px 10px; background: var(--surface); border-top: 1px solid var(--border);
+  }
+  footer .group { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  #classPanel.active { background: var(--panel-color); color: #002; border-color: var(--panel-color); }
+  #classText.active { background: var(--text-color); color: #200; border-color: var(--text-color); }
+  #pageLabel { font-size: 12px; color: #aaa; min-width: 90px; text-align: center; }
+  #labeledMark { color: var(--accent); }
+
+  #zoomControls { display: flex; gap: 4px; }
+  #warnings {
+    position: absolute; top: 8px; left: 8px; right: 8px; max-height: 30%; overflow: auto;
+    background: rgba(50,20,20,0.9); border: 1px solid #a33; border-radius: 6px; padding: 8px;
+    font-size: 12px; display: none; z-index: 6;
+  }
+  #warnings.show { display: block; }
+  #warnings button { float: right; }
+</style>
+</head>
+<body>
+<div id="app">
+  <header>
+    <button id="openFolderBtn">Open folder…</button>
+    <button id="openFilesBtn">Add files…</button>
+    <input type="file" id="folderInput" webkitdirectory multiple>
+    <input type="file" id="filesInput" multiple accept="image/jpeg,image/png,image/webp,application/json">
+    <span class="spacer"></span>
+    <span class="status" id="saveModeStatus">No batch loaded</span>
+  </header>
+
+  <!-- Normal document flow, not absolutely positioned over the canvas — a selection's controls
+       must never be able to cover a box in #boxLayer that the user is trying to tap next. -->
+  <div id="boxToolbar">
+    <button id="flipClassBtn" title="F">Panel/Text</button>
+    <button id="deleteBoxBtn" style="color:#ff8080" title="Delete">Delete</button>
+    <span id="stackHint"></span>
+  </div>
+
+  <main>
+    <div id="canvasArea">
+      <div id="emptyState">
+        <h1>Panel Ground Truth Labeler</h1>
+        <p>Open <code>Internal storage/Mihon/panel_flags/bad</code> — the pages you flagged as wrong,
+        the ones worth correcting — or add the <code>.jpg</code>/<code>.json</code> file pairs
+        directly if your browser can't pick a folder (e.g. Firefox for Android). Pages you marked
+        good already have correct detection, so there's nothing to fix there.</p>
+        <p>Boxes start from what the model detected. Each has its own number and color so you can
+        tell overlapping ones apart — drag corners to resize, drag the box to move it, drag on empty
+        space to draw a new one, tap a box to select it, or pick it from the Panels/Text lists. Hold
+        Ctrl and drag with the mouse to pan. On a page covered in boxes, hold P or T and drag to
+        force-draw a panel/text box on top of whatever's there instead of grabbing it. Hotkeys:
+        with a box selected, P/T set its class and F flips it; otherwise P/T set the class new boxes
+        get drawn as. Delete removes the selected box, arrows change page, Ctrl+Z undoes, Ctrl+S saves.</p>
+      </div>
+      <div id="viewport" hidden>
+        <div id="content">
+          <img id="pageImg" alt="">
+          <div id="boxLayer"></div>
+        </div>
+      </div>
+      <div id="warnings"><button id="dismissWarnings">×</button><div id="warningsText"></div></div>
+    </div>
+
+    <aside id="sidebar">
+      <div class="sidebar-header">
+        <div style="display:flex;align-items:center;gap:8px;">
+          <h2>Pages</h2>
+          <span id="pagesSummary" class="header-hint"></span>
+        </div>
+        <button id="pagesCollapseBtn" class="collapse-btn" title="Collapse">▾</button>
+      </div>
+      <div class="sidebar-section" id="pagesSection">
+        <label class="pages-filter">
+          <input type="checkbox" id="pagesFilterUnlabeled"> Unlabeled only
+        </label>
+        <div id="pageListWrap">
+          <div id="pageList"></div>
+          <div id="pageListEmpty">No pages loaded.</div>
+        </div>
+      </div>
+
+      <div class="sidebar-section">
+        <div class="sidebar-label">Class for new boxes</div>
+        <button id="classPanel" class="class-row" title="P">● Panel</button>
+        <button id="classText" class="class-row" title="T">● Text</button>
+      </div>
+
+      <div class="sidebar-label standalone">Panels (<span id="panelCount">0</span>) — drag ⠿ to reorder</div>
+      <div id="panelListWrap" class="class-list-wrap">
+        <div id="panelList"></div>
+        <div id="panelListEmpty" class="list-empty">No panels yet — draw one on the canvas.</div>
+      </div>
+
+      <div class="sidebar-label standalone">Text (<span id="textCount">0</span>) — drag ⠿ to reorder</div>
+      <div id="textListWrap" class="class-list-wrap">
+        <div id="textList"></div>
+        <div id="textListEmpty" class="list-empty">No text boxes yet — draw one on the canvas.</div>
+      </div>
+    </aside>
+  </main>
+
+  <footer>
+    <div class="group">
+      <button id="undoBtn" title="Ctrl+Z">↶ Undo</button>
+    </div>
+    <div class="group" id="zoomControls">
+      <button id="zoomOut" title="-">−</button>
+      <button id="zoomReset" title="0">Fit</button>
+      <button id="zoomIn" title="+">+</button>
+    </div>
+    <div class="group">
+      <button id="prevBtn" title="←">◀ Prev</button>
+      <span id="pageLabel">–</span>
+      <button id="nextBtn" title="→">Next ▶</button>
+    </div>
+    <div class="group">
+      <button id="saveBtn" class="primary" title="Ctrl+S">Save</button>
+    </div>
+  </footer>
+</div>
+
+<script>
+'use strict';
+
+// One distinct hue per box index (cycled), so adjacent/overlapping boxes are told apart by color
+// and number, not just by panel/text class — mirrors the app's own "Show panel order" overlay.
+const BOX_PALETTE = [
+  '#ff4d4d', '#4dff88', '#4da3ff', '#c34dff', '#ffd24d',
+  '#4dfff0', '#ff4dc3', '#a3ff4d', '#ff8a4d', '#8a4dff',
+];
+// White was nearly invisible against light/greyscale manga art while drawing — a saturated hot
+// pink isn't a color real page art uses, so it reads clearly against anything underneath it.
+const DRAW_PREVIEW_COLOR = '#ff17c9';
+
+/* ---------------------------------------------------------------------- *
+ * State
+ * ---------------------------------------------------------------------- */
+
+const state = {
+  pages: [],          // { stem, imageFile, imageUrl, payload, boxes, dirty, hasSavedGroundTruth, imageHandleName }
+  currentIndex: -1,
+  dirHandle: null,     // FileSystemDirectoryHandle, if the batch came from a writable folder pick
+  activeClass: 'panel',
+  selection: null,     // index into current page's boxes
+  view: { scale: 1, panX: 0, panY: 0 },
+  baseWidth: 0, baseHeight: 0, // natural image size (unscaled layout size of #content)
+};
+
+const els = {};
+['openFolderBtn','openFilesBtn','folderInput','filesInput','saveModeStatus','canvasArea','emptyState','viewport',
+ 'content','pageImg','boxLayer','boxToolbar','undoBtn','flipClassBtn','deleteBoxBtn','stackHint','warnings','warningsText',
+ 'dismissWarnings','sidebar','classPanel','classText',
+ 'pagesSummary','pagesCollapseBtn','pagesSection','pagesFilterUnlabeled','pageListWrap','pageList','pageListEmpty',
+ 'panelListWrap','panelList','panelListEmpty','panelCount',
+ 'textListWrap','textList','textListEmpty','textCount',
+ 'zoomOut','zoomReset','zoomIn','prevBtn','pageLabel',
+ 'nextBtn','saveBtn'].forEach(id => { els[id] = document.getElementById(id); });
+
+/* ---------------------------------------------------------------------- *
+ * File classification & pairing
+ * ---------------------------------------------------------------------- */
+
+// Returns {stem, kind} or null. kind is 'image' | 'detection' | 'ground_truth'.
+function classifyFile(name) {
+  if (name.endsWith('.ground_truth.json')) {
+    return { stem: name.slice(0, -'.ground_truth.json'.length), kind: 'ground_truth' };
+  }
+  if (name.endsWith('.json')) {
+    return { stem: name.slice(0, -'.json'.length), kind: 'detection' };
+  }
+  const m = name.match(/\.(jpe?g|png|webp)$/i);
+  if (m) {
+    return { stem: name.slice(0, -m[0].length), kind: 'image' };
+  }
+  return null;
+}
+
+async function readText(file) { return await file.text(); }
+
+// files: array of File. Merges into state.pages (by stem), preserving already-loaded pages/edits.
+async function ingestFiles(files) {
+  const groups = new Map(); // stem -> {image, detection, ground_truth}
+  const warnings = [];
+
+  for (const file of files) {
+    const c = classifyFile(file.name);
+    if (!c) { warnings.push(`Skipped unrecognized file: ${file.name}`); continue; }
+    if (!groups.has(c.stem)) groups.set(c.stem, {});
+    groups.get(c.stem)[c.kind] = file;
+  }
+
+  const byStem = new Map(state.pages.map(p => [p.stem, p]));
+
+  for (const [stem, group] of groups) {
+    if (!group.image || !group.detection) {
+      const missing = !group.image ? 'image' : 'detection.json';
+      warnings.push(`Skipped "${stem}": missing ${missing}`);
+      continue;
+    }
+    if (byStem.has(stem)) {
+      // Already loaded — if a ground_truth file just showed up for it (e.g. re-added after a
+      // download-fallback save), adopt its boxes instead of clobbering in-progress edits.
+      const existing = byStem.get(stem);
+      if (group.ground_truth && !existing.hasSavedGroundTruth) {
+        try {
+          const gt = JSON.parse(await readText(group.ground_truth));
+          existing.boxes = groundTruthToBoxes(gt);
+          existing.hasSavedGroundTruth = true;
+          existing.dirty = false;
+        } catch (e) {
+          warnings.push(`Couldn't parse ground truth for "${stem}": ${e.message}`);
+        }
+      }
+      continue;
+    }
+
+    let payload;
+    try {
+      payload = JSON.parse(await readText(group.detection));
+    } catch (e) {
+      warnings.push(`Couldn't parse detection.json for "${stem}": ${e.message}`);
+      continue;
+    }
+
+    let boxes, hasSavedGroundTruth = false;
+    if (group.ground_truth) {
+      try {
+        const gt = JSON.parse(await readText(group.ground_truth));
+        boxes = groundTruthToBoxes(gt);
+        hasSavedGroundTruth = true;
+      } catch (e) {
+        warnings.push(`Couldn't parse ground truth for "${stem}", starting from raw detections: ${e.message}`);
+        boxes = rawDetectionsToBoxes(payload);
+      }
+    } else {
+      boxes = rawDetectionsToBoxes(payload);
+    }
+
+    const page = {
+      stem,
+      imageFile: group.image,
+      imageUrl: URL.createObjectURL(group.image),
+      payload,
+      boxes,
+      undoStack: [], // snapshots of page.boxes taken before each mutating action — see snapshotBoxes/undo
+      dirty: false,
+      hasSavedGroundTruth,
+    };
+    state.pages.push(page);
+    byStem.set(stem, page);
+  }
+
+  state.pages.sort((a, b) => a.stem.localeCompare(b.stem));
+
+  if (warnings.length) showWarnings(warnings);
+
+  if (state.pages.length && state.currentIndex === -1) {
+    state.currentIndex = 0;
+  }
+  refreshChrome();
+  if (state.currentIndex >= 0) renderPage(state.currentIndex);
+}
+
+function rawDetectionsToBoxes(payload) {
+  const raw = payload.rawDetections || [];
+  const boxes = raw.map(d => ({
+    cls: d.cls === 0 ? 'panel' : 'text',
+    left: d.rect.left, top: d.rect.top, right: d.rect.right, bottom: d.rect.bottom,
+  }));
+  // Raw detections come back in whatever order the model happened to emit them, which has no
+  // relationship to reading order. A rough row-band sort (top-to-bottom, then right-to-left for
+  // RTL / left-to-right for LTR within a row) at least gives sensible-looking numbers as a
+  // starting point — this is a heuristic, not the app's real recursive X-Y cut algorithm
+  // (PanelOrdering.kt), so don't expect it to be exactly right on unusual layouts.
+  return sortForReadingOrder(boxes, payload.direction);
+}
+
+function sortForReadingOrder(boxes, direction) {
+  const rtl = direction === 'RTL';
+  const ROW_BAND = 0.06; // boxes within ~6% of page height are treated as the same row
+  return [...boxes].sort((a, b) => {
+    const ay = (a.top + a.bottom) / 2, by = (b.top + b.bottom) / 2;
+    if (Math.abs(ay - by) > ROW_BAND) return ay - by;
+    const ax = (a.left + a.right) / 2, bx = (b.left + b.right) / 2;
+    return rtl ? bx - ax : ax - bx;
+  });
+}
+
+function groundTruthToBoxes(gt) {
+  const panels = (gt.panels || []).map(r => ({ cls: 'panel', ...r }));
+  const texts = (gt.texts || []).map(r => ({ cls: 'text', ...r }));
+  return panels.concat(texts);
+}
+
+function showWarnings(list) {
+  els.warningsText.innerHTML = list.map(w => `<div>${escapeHtml(w)}</div>`).join('');
+  els.warnings.classList.add('show');
+}
+function escapeHtml(s) { return s.replace(/[&<>"]/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+els.dismissWarnings.onclick = () => els.warnings.classList.remove('show');
+
+/* ---------------------------------------------------------------------- *
+ * Loading — folder picker (with write access) or plain multi-file picker
+ * ---------------------------------------------------------------------- */
+
+els.openFolderBtn.onclick = async () => {
+  if ('showDirectoryPicker' in window) {
+    try {
+      const handle = await window.showDirectoryPicker({ mode: 'readwrite' });
+      state.dirHandle = handle;
+      const files = [];
+      for await (const [name, entry] of handle.entries()) {
+        if (entry.kind === 'file') files.push(await entry.getFile());
+      }
+      await ingestFiles(files);
+      return;
+    } catch (e) {
+      if (e.name === 'AbortError') return;
+      // Fall through to the input-based folder picker (desktop Firefox: read-only, works via
+      // webkitdirectory even without File System Access API support).
+    }
+  }
+  els.folderInput.click();
+};
+
+els.folderInput.onchange = async (e) => {
+  const files = Array.from(e.target.files || []);
+  els.folderInput.value = '';
+  if (files.length) await ingestFiles(files);
+};
+
+els.openFilesBtn.onclick = () => els.filesInput.click();
+els.filesInput.onchange = async (e) => {
+  const files = Array.from(e.target.files || []);
+  els.filesInput.value = '';
+  if (files.length) await ingestFiles(files);
+};
+
+function refreshChrome() {
+  const hasPages = state.pages.length > 0;
+  els.emptyState.style.display = hasPages ? 'none' : '';
+  els.viewport.hidden = !hasPages;
+  els.saveModeStatus.textContent = !hasPages
+    ? 'No batch loaded'
+    : `${state.pages.length} page(s) — ${state.dirHandle ? 'live folder write' : 'download on save'}`;
+  els.prevBtn.disabled = !hasPages || state.currentIndex <= 0;
+  els.nextBtn.disabled = !hasPages || state.currentIndex >= state.pages.length - 1;
+  els.saveBtn.disabled = !hasPages;
+  updatePageLabel();
+  renderPageList();
+}
+
+function updatePageLabel() {
+  if (state.currentIndex < 0) { els.pageLabel.textContent = '–'; return; }
+  const page = state.pages[state.currentIndex];
+  const mark = page && page.hasSavedGroundTruth ? ' <span id="labeledMark">✓</span>' : '';
+  els.pageLabel.innerHTML = `${state.currentIndex + 1} / ${state.pages.length}${mark}`;
+}
+
+/* ---------------------------------------------------------------------- *
+ * Pages panel — the "file explorer": every loaded page, whether it's been
+ * adjusted yet, and a direct jump to it (instead of only stepping through
+ * with Prev/Next).
+ * ---------------------------------------------------------------------- */
+
+/** 'done' once saved with no edits since; 'unsaved' if the in-memory boxes differ from what's on
+    disk (takes priority over 'done' — that's the state that actually needs attention); otherwise
+    'untouched' — still exactly what the model detected. */
+function pageStatus(page) {
+  if (page.dirty) return 'unsaved';
+  if (page.hasSavedGroundTruth) return 'done';
+  return 'untouched';
+}
+const PAGE_STATUS_LABEL = { done: 'Done', unsaved: 'Unsaved changes', untouched: 'Not started' };
+
+function renderPageList() {
+  const pages = state.pages;
+  const doneCount = pages.filter(p => pageStatus(p) === 'done').length;
+  els.pagesSummary.textContent = pages.length === 0 ? '' : `${doneCount}/${pages.length} done`;
+
+  const onlyUnlabeled = els.pagesFilterUnlabeled.checked;
+  const visible = pages
+    .map((p, i) => ({ p, i }))
+    .filter(({ p }) => !onlyUnlabeled || pageStatus(p) !== 'done');
+
+  els.pageListEmpty.textContent = pages.length === 0 ? 'No pages loaded.' : 'Nothing matches the filter.';
+  els.pageListEmpty.style.display = visible.length === 0 ? 'block' : 'none';
+  els.pageList.innerHTML = '';
+  visible.forEach(({ p, i }) => {
+    const status = pageStatus(p);
+    const row = document.createElement('div');
+    row.className = 'page-list-item' + (i === state.currentIndex ? ' current' : '');
+
+    const thumb = document.createElement('img');
+    thumb.className = 'page-thumb';
+    thumb.src = p.imageUrl;
+    thumb.alt = '';
+    row.appendChild(thumb);
+
+    const info = document.createElement('div');
+    info.className = 'page-info';
+    const name = document.createElement('div');
+    name.className = 'page-name';
+    name.textContent = p.stem;
+    info.appendChild(name);
+
+    const statusRow = document.createElement('div');
+    statusRow.className = 'page-status';
+    const dot = document.createElement('span');
+    dot.className = 'page-status-dot ' + status;
+    statusRow.appendChild(dot);
+    const statusText = document.createElement('span');
+    statusText.textContent = PAGE_STATUS_LABEL[status];
+    statusRow.appendChild(statusText);
+    info.appendChild(statusRow);
+    row.appendChild(info);
+
+    row.onclick = () => goTo(i);
+    els.pageList.appendChild(row);
+  });
+}
+
+els.pagesFilterUnlabeled.onchange = renderPageList;
+
+let pagesCollapsed = false;
+els.pagesCollapseBtn.onclick = () => {
+  pagesCollapsed = !pagesCollapsed;
+  els.pagesSection.classList.toggle('collapsed', pagesCollapsed);
+  els.pagesCollapseBtn.textContent = pagesCollapsed ? '▸' : '▾';
+};
+
+/* ---------------------------------------------------------------------- *
+ * Rendering
+ * ---------------------------------------------------------------------- */
+
+function renderPage(index) {
+  const page = state.pages[index];
+  if (!page) return;
+  state.selection = null;
+  lastTapScreenPoint = null;
+  lastTapCandidates = null;
+  hideBoxToolbar();
+  els.pageImg.src = page.imageUrl;
+  els.pageImg.onload = () => {
+    state.baseWidth = els.pageImg.naturalWidth;
+    state.baseHeight = els.pageImg.naturalHeight;
+    els.content.style.width = state.baseWidth + 'px';
+    els.content.style.height = state.baseHeight + 'px';
+    fitToViewport();
+    drawBoxes();
+  };
+  updatePageLabel();
+}
+
+/** Panels and texts are numbered as two separate sequences (1..N panels, 1..M texts) rather than
+    one shared count across both classes — matches how the app's own debug overlay and the reason
+    a mixed "3rd box overall happens to be a text" number was confusing to read. */
+function computeClassRanks(boxes) {
+  const counts = { panel: 0, text: 0 };
+  return boxes.map(b => {
+    counts[b.cls] = (counts[b.cls] || 0) + 1;
+    return counts[b.cls];
+  });
+}
+
+function drawBoxes() {
+  const page = state.pages[state.currentIndex];
+  els.boxLayer.innerHTML = '';
+  if (!page) { renderBoxList([]); return; }
+  const ranks = computeClassRanks(page.boxes);
+  page.boxes.forEach((box, i) => els.boxLayer.appendChild(buildBoxEl(box, i, ranks[i])));
+  els.boxLayer.classList.toggle('has-selection', state.selection !== null);
+  renderBoxList(page.boxes, ranks);
+}
+
+/** The sidebar's two clickable lists (Panels, Text) — the direct fix for picking a box out of a
+    dense/overlapping stack by name instead of by precise tap. Split by class because that's how
+    the boxes are actually numbered and exported; page.boxes itself stays one flat array (canvas
+    rendering/hit-testing/selection all key off that flat index) — only the sidebar groups it. */
+function renderBoxList(boxes, ranks) {
+  const panels = [], texts = [];
+  boxes.forEach((box, i) => (box.cls === 'panel' ? panels : texts).push({ box, i, rank: ranks[i] }));
+  renderClassList('panel', els.panelList, els.panelListEmpty, els.panelCount, panels);
+  renderClassList('text', els.textList, els.textListEmpty, els.textCount, texts);
+}
+
+function renderClassList(cls, listEl, emptyEl, countEl, items) {
+  countEl.textContent = items.length;
+  emptyEl.style.display = items.length === 0 ? 'block' : 'none';
+  listEl.innerHTML = '';
+  items.forEach(({ box, i, rank }, classIndex) => {
+    const color = BOX_PALETTE[i % BOX_PALETTE.length];
+    const row = document.createElement('div');
+    row.className = 'box-list-item' + (state.selection === i ? ' selected' : '');
+
+    const chip = document.createElement('div');
+    chip.className = 'chip';
+    chip.style.background = color;
+    chip.textContent = rank;
+    row.appendChild(chip);
+
+    const label = document.createElement('div');
+    label.className = 'label';
+    label.textContent = cls === 'panel' ? 'Panel' : 'Text';
+    row.appendChild(label);
+
+    const grip = document.createElement('div');
+    grip.className = 'dragHandle';
+    grip.textContent = '⠿';
+    grip.onpointerdown = (e) => startRowDrag(e, cls, classIndex);
+    // A drag with zero movement still dispatches a click afterward, which would otherwise bubble
+    // up to row.onclick and select the box the same instant it was pressed to drag it.
+    grip.onclick = (e) => e.stopPropagation();
+    row.appendChild(grip);
+
+    const del = document.createElement('button');
+    del.className = 'rowDelete';
+    del.textContent = '✕';
+    del.onclick = (e) => { e.stopPropagation(); deleteBoxAt(i); };
+    row.appendChild(del);
+
+    row.onclick = () => selectBox(i);
+    listEl.appendChild(row);
+  });
+}
+
+/* ---------------------------------------------------------------------- *
+ * Sidebar drag-to-reorder — drag a row by its grip handle directly to the
+ * position you want, instead of repeated up/down taps. Scoped to a single
+ * class's list (dragging a panel only reorders among panels): panels and
+ * texts are numbered and exported as independent sequences, so reordering
+ * across classes has no meaning. Rows stay in their original flow slot the
+ * whole time (so the list's scroll height never jumps mid-drag); only
+ * `transform: translateY(...)` moves them, exactly like the corner/edge
+ * resize handles on canvas boxes use raw pointer events rather than HTML5
+ * drag-and-drop (which has poor touch support).
+ * ---------------------------------------------------------------------- */
+let rowDrag = null;
+
+/** Rebuilds page.boxes with `cls`'s boxes replaced, in order, by newOrderForClass — every other
+    box (the other class) keeps its exact original array slot untouched. */
+function replaceClassInPlace(boxes, cls, newOrderForClass) {
+  let k = 0;
+  return boxes.map(b => (b.cls === cls ? newOrderForClass[k++] : b));
+}
+
+function startRowDrag(e, cls, classIndex) {
+  const page = state.pages[state.currentIndex];
+  if (!page) return;
+  const listEl = cls === 'panel' ? els.panelList : els.textList;
+  const rows = Array.from(listEl.children);
+  if (rows.length < 2) return;
+  e.preventDefault();
+  const row = rows[classIndex];
+  const rowHeight = rows[1].getBoundingClientRect().top - rows[0].getBoundingClientRect().top;
+  // Snapshot now, matching every other mutating gesture in this file (move/resize/flip/delete) —
+  // even if the drag ends up back where it started, a no-op undo entry is harmless.
+  snapshotBoxes(page);
+  rowDrag = {
+    pointerId: e.pointerId,
+    cls,
+    fromIndex: classIndex,
+    currentSlot: classIndex,
+    rowHeight,
+    startClientY: e.clientY,
+    order: rows.map((_, i) => i), // order[slot] = original class-local index currently at that slot
+    classBoxesOriginal: page.boxes.filter(b => b.cls === cls), // object refs, indexed by class-local index
+    selectedRef: state.selection !== null ? page.boxes[state.selection] : null,
+    rows,
+    row,
+  };
+  row.classList.add('dragging');
+}
+
+// Listened on window, not the grip itself — matches this file's existing canvas-gesture pattern
+// (onPointerDown/Move/Up below), and means the drag keeps tracking even once the finger has moved
+// off the small grip element, with no setPointerCapture involved.
+function onRowDragMove(e) {
+  if (!rowDrag || e.pointerId !== rowDrag.pointerId) return;
+  e.preventDefault();
+  const deltaY = e.clientY - rowDrag.startClientY;
+  rowDrag.row.style.transform = `translateY(${deltaY}px)`;
+
+  const n = rowDrag.rows.length;
+  const targetSlot = Math.min(n - 1, Math.max(0, Math.round(rowDrag.fromIndex + deltaY / rowDrag.rowHeight)));
+  if (targetSlot === rowDrag.currentSlot) return;
+
+  const order = rowDrag.order;
+  const fromSlot = order.indexOf(rowDrag.fromIndex);
+  order.splice(fromSlot, 1);
+  order.splice(targetSlot, 0, rowDrag.fromIndex);
+  rowDrag.currentSlot = targetSlot;
+
+  order.forEach((origIndex, newSlot) => {
+    if (origIndex === rowDrag.fromIndex) return;
+    const offset = (newSlot - origIndex) * rowDrag.rowHeight;
+    rowDrag.rows[origIndex].style.transform = `translateY(${offset}px)`;
+  });
+}
+
+function endRowDrag(e) {
+  if (!rowDrag || e.pointerId !== rowDrag.pointerId) return;
+  const page = state.pages[state.currentIndex];
+  const { order, cls, classBoxesOriginal, selectedRef } = rowDrag;
+  rowDrag = null;
+  if (!page) return;
+
+  const newClassOrder = order.map((classLocalIndex) => classBoxesOriginal[classLocalIndex]);
+  page.boxes = replaceClassInPlace(page.boxes, cls, newClassOrder);
+  page.dirty = true;
+  if (selectedRef) state.selection = page.boxes.indexOf(selectedRef);
+  drawBoxes();
+}
+
+window.addEventListener('pointermove', onRowDragMove);
+window.addEventListener('pointerup', endRowDrag);
+window.addEventListener('pointercancel', endRowDrag);
+
+function hexToRgba(hex, alpha) {
+  const r = parseInt(hex.slice(1, 3), 16), g = parseInt(hex.slice(3, 5), 16), b = parseInt(hex.slice(5, 7), 16);
+  return `rgba(${r},${g},${b},${alpha})`;
+}
+
+function buildBoxEl(box, i, classRank) {
+  const el = document.createElement('div');
+  el.className = 'box ' + box.cls + (state.selection === i ? ' selected' : '');
+  const color = i >= 0 ? BOX_PALETTE[i % BOX_PALETTE.length] : DRAW_PREVIEW_COLOR;
+  el.style.borderColor = color;
+  // Filled, not just outlined — a translucent tint of the box's own color makes it much easier to
+  // pick out at a glance (especially against busy manga art) without fully hiding what's underneath.
+  el.style.backgroundColor = hexToRgba(color, 0.28);
+  positionBoxEl(el, box);
+  el.dataset.index = i;
+
+  // Number is the primary way to tell boxes apart (matches the app's own debug-overlay style);
+  // it's per-class (1..N panels, 1..M texts independently), not a shared count across both classes.
+  // The trailing class letter (P/T) is secondary, since border style (solid/dashed) already shows it.
+  const tag = document.createElement('div');
+  tag.className = 'tag';
+  tag.style.background = color;
+  tag.textContent = i >= 0 ? `${classRank}${box.cls === 'panel' ? 'P' : 'T'}` : '';
+  el.appendChild(tag);
+
+  ['nw', 'n', 'ne', 'e', 'se', 's', 'sw', 'w'].forEach(corner => {
+    const h = document.createElement('div');
+    h.className = 'handle ' + corner;
+    h.dataset.corner = corner;
+    h.dataset.index = i;
+    el.appendChild(h);
+  });
+
+  return el;
+}
+
+function positionBoxEl(el, box) {
+  el.style.left = (box.left * 100) + '%';
+  el.style.top = (box.top * 100) + '%';
+  el.style.width = ((box.right - box.left) * 100) + '%';
+  el.style.height = ((box.bottom - box.top) * 100) + '%';
+}
+
+/* ---------------------------------------------------------------------- *
+ * Pan / zoom
+ * ---------------------------------------------------------------------- */
+
+function applyTransform() {
+  els.content.style.transform =
+    `translate(${state.view.panX}px, ${state.view.panY}px) scale(${state.view.scale})`;
+}
+
+function fitToViewport() {
+  const rect = els.viewport.getBoundingClientRect();
+  if (!state.baseWidth || !state.baseHeight) return;
+  const scale = Math.min(rect.width / state.baseWidth, rect.height / state.baseHeight, 1) || 1;
+  state.view.scale = scale;
+  state.view.panX = (rect.width - state.baseWidth * scale) / 2;
+  state.view.panY = (rect.height - state.baseHeight * scale) / 2;
+  applyTransform();
+}
+
+function zoomAt(screenX, screenY, factor) {
+  const rect = els.viewport.getBoundingClientRect();
+  const sx = screenX - rect.left, sy = screenY - rect.top;
+  const oldScale = state.view.scale;
+  const newScale = Math.min(Math.max(oldScale * factor, 0.1), 8);
+  const localX = (sx - state.view.panX) / oldScale;
+  const localY = (sy - state.view.panY) / oldScale;
+  state.view.panX = sx - newScale * localX;
+  state.view.panY = sy - newScale * localY;
+  state.view.scale = newScale;
+  applyTransform();
+}
+
+els.zoomIn.onclick = () => {
+  const r = els.viewport.getBoundingClientRect();
+  zoomAt(r.left + r.width / 2, r.top + r.height / 2, 1.25);
+};
+els.zoomOut.onclick = () => {
+  const r = els.viewport.getBoundingClientRect();
+  zoomAt(r.left + r.width / 2, r.top + r.height / 2, 0.8);
+};
+els.zoomReset.onclick = fitToViewport;
+
+els.viewport.addEventListener('wheel', (e) => {
+  e.preventDefault();
+  zoomAt(e.clientX, e.clientY, e.deltaY < 0 ? 1.1 : 0.9);
+}, { passive: false });
+
+/* ---------------------------------------------------------------------- *
+ * Pointer interaction: draw / move / resize / pan / pinch
+ * ---------------------------------------------------------------------- */
+
+const pointers = new Map(); // pointerId -> {x,y}
+let gesture = null;
+// gesture: { type: 'draw'|'move'|'resize'|'pan', ... }
+let pinch = null; // { startDist, startScale, startPanX, startPanY, midX, midY }
+
+// Tap-to-select-through-a-stack: overlapping boxes (a text bubble inside a panel, two panels
+// sharing an edge) can't be told apart by DOM z-order alone — whatever painted last would always
+// win, with no way to reach anything underneath. Instead every box whose rect contains the tap
+// point is a candidate, smallest-area first (the more likely "inner" target on a first tap); a
+// second tap at essentially the same screen spot advances to the next candidate instead of
+// re-picking the same one, so a full stack is reachable by tapping repeatedly in place.
+let lastTapScreenPoint = null;
+let lastTapCandidates = null; // sorted box-index array from the previous tap, for repeat-tap detection
+let lastTapCandidateIndex = 0;
+const TAP_CYCLE_PIXEL_TOLERANCE = 16;
+
+function boxArea(box) { return Math.max(0, box.right - box.left) * Math.max(0, box.bottom - box.top); }
+
+/** Every box index whose rect contains (nx, ny), smallest area first. */
+function hitTestBoxIndices(page, nx, ny) {
+  return page.boxes
+    .map((box, i) => i)
+    .filter(i => {
+      const b = page.boxes[i];
+      return nx >= b.left && nx <= b.right && ny >= b.top && ny <= b.bottom;
+    })
+    .sort((a, b) => boxArea(page.boxes[a]) - boxArea(page.boxes[b]));
+}
+
+function localSizePx() {
+  return { w: state.baseWidth * state.view.scale, h: state.baseHeight * state.view.scale };
+}
+
+function screenToNormalized(clientX, clientY) {
+  const rect = els.viewport.getBoundingClientRect();
+  const x = (clientX - rect.left - state.view.panX) / state.view.scale / state.baseWidth;
+  const y = (clientY - rect.top - state.view.panY) / state.view.scale / state.baseHeight;
+  return { x, y };
+}
+
+// Only viewport needs a listener — boxLayer/box/handle elements are all its descendants, so a
+// pointerdown anywhere among them already bubbles up here; a second listener on boxLayer would
+// double-fire for any target inside it that doesn't call stopPropagation().
+els.viewport.addEventListener('pointerdown', onPointerDown);
+window.addEventListener('pointermove', onPointerMove);
+window.addEventListener('pointerup', onPointerUp);
+window.addEventListener('pointercancel', onPointerUp);
+
+function onPointerDown(e) {
+  if (state.currentIndex < 0) return;
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  if (pointers.size === 2) {
+    // Any single-pointer gesture in progress is superseded by the pinch — a draw-in-progress
+    // leaves a temporary preview box appended to boxLayer that must be cleaned up here, or it's
+    // orphaned in the DOM forever (never committed, never removed).
+    if (gesture && gesture.type === 'draw' && gesture.el) {
+      els.boxLayer.removeChild(gesture.el);
+    }
+    gesture = null;
+    const pts = Array.from(pointers.values());
+    const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y);
+    pinch = {
+      startDist: dist || 1,
+      startScale: state.view.scale,
+      startPanX: state.view.panX,
+      startPanY: state.view.panY,
+      midX: (pts[0].x + pts[1].x) / 2,
+      midY: (pts[0].y + pts[1].y) / 2,
+    };
+    return;
+  }
+  if (pointers.size > 2) return;
+
+  // Ctrl+drag pans from anywhere — even over a box or handle — without needing to toggle the
+  // persistent "Pan" mode first. Mouse-only: on a touchscreen there's no Ctrl key to hold, and it
+  // shouldn't shadow the two-finger-pinch path pointerType==='touch' already uses for panning.
+  if (e.ctrlKey && e.pointerType === 'mouse') {
+    lastTapScreenPoint = null;
+    lastTapCandidates = null;
+    gesture = { type: 'pan', startPanX: state.view.panX, startPanY: state.view.panY, startX: e.clientX, startY: e.clientY };
+    els.viewport.classList.add('panning');
+    return;
+  }
+
+  // Holding P or T while dragging force-draws that class of box, even starting on top of an
+  // existing box or handle — the fix for a page dense enough that a plain drag just grabs
+  // whatever's underneath instead of starting a new box. Mouse-only, same reasoning as Ctrl+pan.
+  if ((pHeld || tHeld) && e.pointerType === 'mouse') {
+    lastTapScreenPoint = null;
+    lastTapCandidates = null;
+    deselectBox();
+    gesture = { type: 'draw', start: screenToNormalized(e.clientX, e.clientY), el: null, cls: pHeld ? 'panel' : 'text' };
+    return;
+  }
+
+  const target = e.target;
+  const page = state.pages[state.currentIndex];
+
+  if (target.classList.contains('handle')) {
+    const i = Number(target.dataset.index);
+    selectBox(i);
+    snapshotBoxes(page); // once, before this drag starts — undo reverts the whole gesture, not each pixel
+    gesture = { type: 'resize', index: i, corner: target.dataset.corner, box: { ...page.boxes[i] } };
+    e.stopPropagation();
+    lastTapScreenPoint = null; // resizing isn't a tap-to-cycle action
+    lastTapCandidates = null;
+    return;
+  }
+
+  const start = screenToNormalized(e.clientX, e.clientY);
+  const candidates = hitTestBoxIndices(page, start.x, start.y);
+
+  if (candidates.length > 0) {
+    const sameSpot = lastTapScreenPoint &&
+      Math.hypot(e.clientX - lastTapScreenPoint.x, e.clientY - lastTapScreenPoint.y) < TAP_CYCLE_PIXEL_TOLERANCE;
+    const sameCandidates = lastTapCandidates && candidates.join(',') === lastTapCandidates.join(',');
+
+    lastTapCandidateIndex = (sameSpot && sameCandidates) ? (lastTapCandidateIndex + 1) % candidates.length : 0;
+    const i = candidates[lastTapCandidateIndex];
+    lastTapScreenPoint = { x: e.clientX, y: e.clientY };
+    lastTapCandidates = candidates;
+
+    selectBox(i, candidates.length);
+    snapshotBoxes(page); // once, before this drag starts — see the resize branch above for why
+    gesture = { type: 'move', index: i, box: { ...page.boxes[i] }, start };
+    e.stopPropagation();
+    return;
+  }
+
+  lastTapScreenPoint = null;
+  lastTapCandidates = null;
+
+  // Empty space.
+  if (panModeActive) {
+    gesture = { type: 'pan', startPanX: state.view.panX, startPanY: state.view.panY, startX: e.clientX, startY: e.clientY };
+    els.viewport.classList.add('panning');
+  } else {
+    gesture = { type: 'draw', start, el: null };
+    deselectBox();
+  }
+}
+
+function onPointerMove(e) {
+  if (!pointers.has(e.pointerId)) return;
+  pointers.set(e.pointerId, { x: e.clientX, y: e.clientY });
+
+  if (pointers.size === 2 && pinch) {
+    const pts = Array.from(pointers.values());
+    const dist = Math.hypot(pts[0].x - pts[1].x, pts[0].y - pts[1].y) || 1;
+    const factor = dist / pinch.startDist;
+    const newScale = Math.min(Math.max(pinch.startScale * factor, 0.1), 8);
+    const rect = els.viewport.getBoundingClientRect();
+    const localX = (pinch.midX - rect.left - pinch.startPanX) / pinch.startScale;
+    const localY = (pinch.midY - rect.top - pinch.startPanY) / pinch.startScale;
+    const midX = (pts[0].x + pts[1].x) / 2, midY = (pts[0].y + pts[1].y) / 2;
+    state.view.scale = newScale;
+    state.view.panX = (midX - rect.left) - newScale * localX;
+    state.view.panY = (midY - rect.top) - newScale * localY;
+    applyTransform();
+    return;
+  }
+
+  if (!gesture) return;
+  const page = state.pages[state.currentIndex];
+
+  if (gesture.type === 'pan') {
+    state.view.panX = gesture.startPanX + (e.clientX - gesture.startX);
+    state.view.panY = gesture.startPanY + (e.clientY - gesture.startY);
+    applyTransform();
+    return;
+  }
+
+  if (gesture.type === 'draw') {
+    const now = screenToNormalized(e.clientX, e.clientY);
+    const l = Math.min(gesture.start.x, now.x), r = Math.max(gesture.start.x, now.x);
+    const t = Math.min(gesture.start.y, now.y), b = Math.max(gesture.start.y, now.y);
+    if (!gesture.el) {
+      gesture.el = buildBoxEl({ cls: gesture.cls, left: l, top: t, right: r, bottom: b }, -1);
+      gesture.el.style.pointerEvents = 'none';
+      els.boxLayer.appendChild(gesture.el);
+    } else {
+      positionBoxEl(gesture.el, { left: l, top: t, right: r, bottom: b });
+    }
+    gesture.pending = { left: clamp01(l), top: clamp01(t), right: clamp01(r), bottom: clamp01(b) };
+    return;
+  }
+
+  if (gesture.type === 'move') {
+    const now = screenToNormalized(e.clientX, e.clientY);
+    const dx = now.x - gesture.start.x, dy = now.y - gesture.start.y;
+    const w = gesture.box.right - gesture.box.left, h = gesture.box.bottom - gesture.box.top;
+    let left = clamp(gesture.box.left + dx, 0, 1 - w);
+    let top = clamp(gesture.box.top + dy, 0, 1 - h);
+    const box = page.boxes[gesture.index];
+    box.left = left; box.top = top; box.right = left + w; box.bottom = top + h;
+    positionBoxEl(els.boxLayer.children[gesture.index], box);
+    page.dirty = true;
+    return;
+  }
+
+  if (gesture.type === 'resize') {
+    const now = screenToNormalized(e.clientX, e.clientY);
+    const box = page.boxes[gesture.index];
+    const orig = gesture.box;
+    if (gesture.corner.includes('n')) box.top = clamp(now.y, 0, orig.bottom - 0.01);
+    if (gesture.corner.includes('s')) box.bottom = clamp(now.y, orig.top + 0.01, 1);
+    if (gesture.corner.includes('w')) box.left = clamp(now.x, 0, orig.right - 0.01);
+    if (gesture.corner.includes('e')) box.right = clamp(now.x, orig.left + 0.01, 1);
+    positionBoxEl(els.boxLayer.children[gesture.index], box);
+    page.dirty = true;
+    return;
+  }
+}
+
+function onPointerUp(e) {
+  pointers.delete(e.pointerId);
+  if (pointers.size < 2) pinch = null;
+  if (pointers.size > 0) return;
+  els.viewport.classList.remove('panning');
+  if (!gesture) return;
+
+  if (gesture.type === 'draw' && gesture.el) {
+    els.boxLayer.removeChild(gesture.el);
+    const p = gesture.pending;
+    if (p && (p.right - p.left) > 0.005 && (p.bottom - p.top) > 0.005) {
+      const page = state.pages[state.currentIndex];
+      snapshotBoxes(page);
+      page.boxes.push({ cls: gesture.cls, ...p });
+      page.dirty = true;
+      drawBoxes();
+      selectBox(page.boxes.length - 1);
+    }
+  }
+  gesture = null;
+}
+
+function clamp(v, lo, hi) { return Math.max(lo, Math.min(hi, v)); }
+function clamp01(v) { return clamp(v, 0, 1); }
+
+/* ---------------------------------------------------------------------- *
+ * Selection & box toolbar
+ * ---------------------------------------------------------------------- */
+
+function selectBox(i, stackSize = 1) {
+  state.selection = i;
+  drawBoxes();
+  els.boxToolbar.style.display = 'flex';
+  els.stackHint.textContent = stackSize > 1 ? `${lastTapCandidateIndex + 1}/${stackSize} here — tap again to cycle` : '';
+}
+function deselectBox() {
+  state.selection = null;
+  drawBoxes();
+  hideBoxToolbar();
+  els.stackHint.textContent = '';
+}
+function hideBoxToolbar() { els.boxToolbar.style.display = 'none'; }
+
+/** Shared by the flip button and the P/T hotkeys (which set the selected box's class directly
+    instead of flipping it) — a no-op if the box is already that class, so it doesn't pollute the
+    undo stack every time a key auto-repeats while held. */
+function setSelectedBoxClass(cls) {
+  if (state.selection == null) return;
+  const page = state.pages[state.currentIndex];
+  const box = page.boxes[state.selection];
+  if (box.cls === cls) return;
+  snapshotBoxes(page);
+  box.cls = cls;
+  page.dirty = true;
+  drawBoxes();
+}
+
+els.flipClassBtn.onclick = () => {
+  if (state.selection == null) return;
+  const box = state.pages[state.currentIndex].boxes[state.selection];
+  setSelectedBoxClass(box.cls === 'panel' ? 'text' : 'panel');
+};
+els.deleteBoxBtn.onclick = () => {
+  if (state.selection != null) deleteBoxAt(state.selection);
+};
+
+/** Shared by the toolbar's Delete button and each sidebar row's own delete button. */
+function deleteBoxAt(i) {
+  const page = state.pages[state.currentIndex];
+  if (!page || i == null) return;
+  snapshotBoxes(page);
+  page.boxes.splice(i, 1);
+  page.dirty = true;
+  deselectBox();
+}
+
+/* ---------------------------------------------------------------------- *
+ * Undo — one level of history per action (drag, resize, draw, delete, flip-class, reorder), kept
+ * per-page so it survives navigating away and back. A drag/resize snapshots once at gesture start
+ * (see onPointerDown), not on every pointermove, so one undo reverts the whole accidental drag.
+ * ---------------------------------------------------------------------- */
+
+const UNDO_STACK_LIMIT = 30;
+
+function snapshotBoxes(page) {
+  if (!page) return;
+  page.undoStack = page.undoStack || [];
+  page.undoStack.push(JSON.parse(JSON.stringify(page.boxes)));
+  if (page.undoStack.length > UNDO_STACK_LIMIT) page.undoStack.shift();
+}
+
+function undo() {
+  const page = state.pages[state.currentIndex];
+  if (!page || !page.undoStack || page.undoStack.length === 0) return;
+  page.boxes = page.undoStack.pop();
+  page.dirty = true;
+  deselectBox();
+}
+
+els.undoBtn.onclick = undo;
+
+/** Every hotkey just triggers the same button an equivalent click would — one code path, so a
+    key and its on-screen button can never drift out of sync with each other. */
+window.addEventListener('keydown', (e) => {
+  const activeTag = document.activeElement && document.activeElement.tagName;
+  if (activeTag === 'INPUT' || activeTag === 'TEXTAREA') return;
+
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 'z') {
+    e.preventDefault();
+    undo();
+    return;
+  }
+  if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
+    e.preventDefault();
+    els.saveBtn.click();
+    return;
+  }
+  if (e.ctrlKey || e.metaKey || e.altKey) return; // reserved for browser/OS shortcuts
+  if (state.currentIndex < 0) return;
+
+  switch (e.key) {
+    case 'Delete':
+    case 'Backspace':
+      e.preventDefault();
+      els.deleteBoxBtn.click();
+      break;
+    case 'Escape':
+      deselectBox();
+      break;
+    case 'f': case 'F':
+      els.flipClassBtn.click();
+      break;
+    case 'p': case 'P':
+      // With a box selected, P/T set that box's class directly (an edit); otherwise they set the
+      // class new boxes get drawn as. Either way, holding the key also arms the force-draw drag
+      // handled in onPointerDown above — see pHeld/tHeld below.
+      if (state.selection !== null) setSelectedBoxClass('panel');
+      else els.classPanel.click();
+      break;
+    case 't': case 'T':
+      if (state.selection !== null) setSelectedBoxClass('text');
+      else els.classText.click();
+      break;
+    case 'ArrowLeft':
+      e.preventDefault();
+      els.prevBtn.click();
+      break;
+    case 'ArrowRight':
+      e.preventDefault();
+      els.nextBtn.click();
+      break;
+    case '+': case '=':
+      els.zoomIn.click();
+      break;
+    case '-': case '_':
+      els.zoomOut.click();
+      break;
+    case '0':
+      els.zoomReset.click();
+      break;
+  }
+});
+
+/* ---------------------------------------------------------------------- *
+ * Pan mode toggle (single-finger drag pans instead of drawing)
+ * ---------------------------------------------------------------------- */
+
+let panModeActive = false;
+let ctrlHeld = false;
+let pHeld = false;
+let tHeld = false;
+function updatePanCursor() {
+  els.viewport.classList.toggle('pan-ready', panModeActive || ctrlHeld);
+  els.viewport.classList.toggle('draw-ready', pHeld || tHeld);
+}
+
+const panModeBtn = document.createElement('button');
+panModeBtn.textContent = '✋ Pan';
+panModeBtn.id = 'panModeBtn';
+els.zoomControls = document.getElementById('zoomControls');
+els.zoomControls.insertBefore(panModeBtn, els.zoomControls.firstChild);
+panModeBtn.onclick = () => {
+  panModeActive = !panModeActive;
+  panModeBtn.classList.toggle('toggled', panModeActive);
+  updatePanCursor();
+};
+
+// Ctrl+drag pans, P/T-held+drag force-draws (see the pointerdown handler above); this just keeps
+// the cursor in sync with whichever modifier is currently held, independent of Pan mode.
+window.addEventListener('keydown', (e) => {
+  if (e.key === 'Control' && !ctrlHeld) { ctrlHeld = true; updatePanCursor(); }
+  else if ((e.key === 'p' || e.key === 'P') && !pHeld) { pHeld = true; updatePanCursor(); }
+  else if ((e.key === 't' || e.key === 'T') && !tHeld) { tHeld = true; updatePanCursor(); }
+});
+window.addEventListener('keyup', (e) => {
+  if (e.key === 'Control') { ctrlHeld = false; updatePanCursor(); }
+  else if (e.key === 'p' || e.key === 'P') { pHeld = false; updatePanCursor(); }
+  else if (e.key === 't' || e.key === 'T') { tHeld = false; updatePanCursor(); }
+});
+// Losing window focus while a key is physically held (e.g. alt-tab) would otherwise leave the
+// cursor stuck in an armed state with no keyup ever arriving to clear it.
+window.addEventListener('blur', () => { ctrlHeld = pHeld = tHeld = false; updatePanCursor(); });
+
+/* ---------------------------------------------------------------------- *
+ * Class toggle
+ * ---------------------------------------------------------------------- */
+
+function updateClassButtons() {
+  els.classPanel.classList.toggle('active', state.activeClass === 'panel');
+  els.classText.classList.toggle('active', state.activeClass === 'text');
+}
+els.classPanel.onclick = () => { state.activeClass = 'panel'; updateClassButtons(); };
+els.classText.onclick = () => { state.activeClass = 'text'; updateClassButtons(); };
+updateClassButtons();
+
+/* ---------------------------------------------------------------------- *
+ * Navigation & saving
+ * ---------------------------------------------------------------------- */
+
+async function goTo(index) {
+  if (index < 0 || index >= state.pages.length) return;
+  const current = state.pages[state.currentIndex];
+  if (current && current.dirty) await saveGroundTruth(current);
+  state.currentIndex = index;
+  renderPage(index);
+  refreshChrome();
+}
+els.prevBtn.onclick = () => goTo(state.currentIndex - 1);
+els.nextBtn.onclick = () => goTo(state.currentIndex + 1);
+
+els.saveBtn.onclick = async () => {
+  const page = state.pages[state.currentIndex];
+  if (!page) return;
+  await saveGroundTruth(page);
+  refreshChrome();
+};
+
+function boxesToGroundTruth(page) {
+  const strip = ({ left, top, right, bottom }) => ({ left, top, right, bottom });
+  return {
+    panels: page.boxes.filter(b => b.cls === 'panel').map(strip),
+    texts: page.boxes.filter(b => b.cls === 'text').map(strip),
+    labeledAt: Date.now(),
+  };
+}
+
+async function saveGroundTruth(page) {
+  const filename = `${page.stem}.ground_truth.json`;
+  const text = JSON.stringify(boxesToGroundTruth(page), null, 2);
+
+  if (state.dirHandle) {
+    try {
+      const fileHandle = await state.dirHandle.getFileHandle(filename, { create: true });
+      const writable = await fileHandle.createWritable();
+      await writable.write(text);
+      await writable.close();
+      page.dirty = false;
+      page.hasSavedGroundTruth = true;
+      updatePageLabel();
+      return;
+    } catch (e) {
+      showWarnings([`Couldn't write "${filename}" to the folder (${e.message}) — downloading instead.`]);
+    }
+  }
+
+  downloadText(filename, text);
+  page.dirty = false;
+  page.hasSavedGroundTruth = true;
+  updatePageLabel();
+}
+
+function downloadText(filename, text) {
+  const blob = new Blob([text], { type: 'application/json' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url; a.download = filename;
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+window.addEventListener('beforeunload', (e) => {
+  if (state.pages.some(p => p.dirty)) { e.preventDefault(); e.returnValue = ''; }
+});
+window.addEventListener('resize', () => { if (state.currentIndex >= 0) fitToViewport(); });
+
+refreshChrome();
+</script>
+</body>
+</html>
