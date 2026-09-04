@@ -27,3 +27,8 @@ local.properties
 .superpowers/
 
 panel_flags_pulled
+
+# panel-detection-preview.py: throwaway render output + Python bytecode
+tools/__pycache__/
+tools/panel-previews/
+preview_*.png

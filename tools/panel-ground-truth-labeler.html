@@ -79,6 +79,18 @@
   /* Used for the Panels/Text list headers, which sit directly in #sidebar's flow (not inside a
      padded .sidebar-section), so they carry their own padding instead of inheriting the section's. */
   .sidebar-label.standalone { padding: 10px 12px 6px; margin-bottom: 0; }
+  .panels-label { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .panels-label > span:first-child { flex: 1 1 auto; }
+  .mini-btn {
+    font: inherit; font-size: 11px; text-transform: none; letter-spacing: 0;
+    background: var(--surface-2); color: #ddd; border: 1px solid var(--border);
+    border-radius: 5px; padding: 3px 8px; min-height: auto; cursor: pointer;
+  }
+  .mini-btn:disabled { opacity: 0.4; cursor: default; }
+  /* Shown only when the manual panel order diverges from the ported algorithm — flags the page as
+     a meaningful ordering fixture (and stays hidden, taking no space, when they agree). */
+  .order-flag { font-size: 11px; color: #ffd24d; font-weight: 700; letter-spacing: 0; text-transform: none; }
+  .order-flag:empty { display: none; }
   .class-row { display: block; width: 100%; text-align: left; margin-bottom: 6px; }
   .class-row:last-child { margin-bottom: 0; }
 
@@ -273,7 +285,17 @@
         Ctrl and drag with the mouse to pan. On a page covered in boxes, hold P or T and drag to
         force-draw a panel/text box on top of whatever's there instead of grabbing it. Hotkeys:
         with a box selected, P/T set its class and F flips it; otherwise P/T set the class new boxes
-        get drawn as. Delete removes the selected box, arrows change page, Ctrl+Z undoes, Ctrl+S saves.</p>
+        get drawn as. Delete removes the selected box, arrows change page, Ctrl+Z undoes.</p>
+        <p>Panels load in the reading order the app's own algorithm would use; drag ⠿ in the Panels
+        list to fix the ones it gets wrong. The exported order is your hand-verified reading order —
+        that's what these files tune. <b>≠ app order</b> next to the Panels list means this page's
+        ordering disagrees with the algorithm (so it's a useful fixture); <b>auto-order</b> re-applies
+        the algorithm if you want to start over.</p>
+        <p>Edits are saved to this browser as you go, so you can close the tab and reopen the same
+        folder to pick up where you left off. When you're done, <b>Export all</b> (Ctrl+S) downloads
+        every labeled page as one <code>.zip</code> of <code>.ground_truth.json</code> files — no
+        file-per-page downloads while you work. If the folder opened with live write access, pages
+        also save into it in place as you navigate.</p>
       </div>
       <div id="viewport" hidden>
         <div id="content">
@@ -308,7 +330,11 @@
         <button id="classText" class="class-row" title="T">● Text</button>
       </div>
 
-      <div class="sidebar-label standalone">Panels (<span id="panelCount">0</span>) — drag ⠿ to reorder</div>
+      <div class="sidebar-label standalone panels-label">
+        <span>Panels (<span id="panelCount">0</span>) — drag ⠿ to reorder</span>
+        <button id="autoOrderBtn" class="mini-btn" title="Re-sort panels into the reading order the app's algorithm would use" disabled>auto-order</button>
+        <span id="panelOrderFlag" class="order-flag" title="Your panel order differs from the app's algorithm — this page's export is a useful ordering fixture"></span>
+      </div>
       <div id="panelListWrap" class="class-list-wrap">
         <div id="panelList"></div>
         <div id="panelListEmpty" class="list-empty">No panels yet — draw one on the canvas.</div>
@@ -337,7 +363,8 @@
       <button id="nextBtn" title="→">Next ▶</button>
     </div>
     <div class="group">
-      <button id="saveBtn" class="primary" title="Ctrl+S">Save</button>
+      <button id="saveBtn" title="Write this page's .ground_truth.json into the open folder">Save page</button>
+      <button id="exportAllBtn" class="primary" title="Ctrl+S — download every labeled page as one .zip">⬇ Export all</button>
     </div>
   </footer>
 </div>
@@ -374,10 +401,10 @@ const els = {};
  'content','pageImg','boxLayer','boxToolbar','undoBtn','flipClassBtn','deleteBoxBtn','stackHint','warnings','warningsText',
  'dismissWarnings','sidebar','classPanel','classText',
  'pagesSummary','pagesCollapseBtn','pagesSection','pagesFilterUnlabeled','pageListWrap','pageList','pageListEmpty',
- 'panelListWrap','panelList','panelListEmpty','panelCount',
+ 'panelListWrap','panelList','panelListEmpty','panelCount','autoOrderBtn','panelOrderFlag',
  'textListWrap','textList','textListEmpty','textCount',
  'zoomOut','zoomReset','zoomIn','prevBtn','pageLabel',
- 'nextBtn','saveBtn'].forEach(id => { els[id] = document.getElementById(id); });
+ 'nextBtn','saveBtn','exportAllBtn'].forEach(id => { els[id] = document.getElementById(id); });
 
 /* ---------------------------------------------------------------------- *
  * File classification & pairing
@@ -475,6 +502,8 @@ async function ingestFiles(files) {
 
   state.pages.sort((a, b) => a.stem.localeCompare(b.stem));
 
+  await adoptStoredEdits(warnings);
+
   if (warnings.length) showWarnings(warnings);
 
   if (state.pages.length && state.currentIndex === -1) {
@@ -490,23 +519,116 @@ function rawDetectionsToBoxes(payload) {
     cls: d.cls === 0 ? 'panel' : 'text',
     left: d.rect.left, top: d.rect.top, right: d.rect.right, bottom: d.rect.bottom,
   }));
-  // Raw detections come back in whatever order the model happened to emit them, which has no
-  // relationship to reading order. A rough row-band sort (top-to-bottom, then right-to-left for
-  // RTL / left-to-right for LTR within a row) at least gives sensible-looking numbers as a
-  // starting point — this is a heuristic, not the app's real recursive X-Y cut algorithm
-  // (PanelOrdering.kt), so don't expect it to be exactly right on unusual layouts.
-  return sortForReadingOrder(boxes, payload.direction);
+  // Model emits detections in no particular order. Seed panels in the exact reading order the
+  // app's own algorithm (PanelOrdering.kt, ported below) would use, so the on-screen numbers
+  // start meaningful and you only hand-fix the pages it gets wrong — those hand-fixes are the
+  // point: the exported order is the ground truth used to tune that algorithm.
+  return orderBoxesForReading(boxes, payload.direction);
 }
 
-function sortForReadingOrder(boxes, direction) {
+/** Panels via the ported X-Y-cut algorithm; text boxes via a rough row-band sort (the algorithm
+    is panels-only, and text order isn't a tuning target). Panels always come first in the array,
+    matching how they're exported and numbered. */
+function orderBoxesForReading(boxes, direction) {
   const rtl = direction === 'RTL';
-  const ROW_BAND = 0.06; // boxes within ~6% of page height are treated as the same row
+  const panels = boxes.filter(b => b.cls === 'panel');
+  const texts = boxes.filter(b => b.cls === 'text');
+  return orderPanelsForReading(panels, rtl).concat(sortTextRows(texts, rtl));
+}
+
+function sortTextRows(boxes, rtl) {
+  const ROW_BAND_MID = 0.06; // boxes within ~6% of page height are treated as the same row
   return [...boxes].sort((a, b) => {
     const ay = (a.top + a.bottom) / 2, by = (b.top + b.bottom) / 2;
-    if (Math.abs(ay - by) > ROW_BAND) return ay - by;
+    if (Math.abs(ay - by) > ROW_BAND_MID) return ay - by;
     const ax = (a.left + a.right) / 2, bx = (b.left + b.right) / 2;
     return rtl ? bx - ax : ax - bx;
   });
+}
+
+/* ---------------------------------------------------------------------- *
+ * Reading order — JS port of PanelOrdering.kt's recursive X-Y cut with
+ * straddle tolerance (panels only; the double-page-spread branch is
+ * omitted — spreads are out of scope for this tool). Kept behaviourally
+ * identical to the Kotlin so "what the app would do" is a faithful
+ * reference to correct against. Verified against the non-spread cases in
+ * PanelOrderingTest.kt.
+ * ---------------------------------------------------------------------- */
+
+const STRADDLE_TOLERANCE = 0.12;
+const ORDER_ROW_BAND = 0.12;
+
+function orderPanelsForReading(panels, rightToLeft) {
+  if (panels.length <= 1) return panels.slice();
+  return cutPanels(panels, rightToLeft);
+}
+
+function cutPanels(panels, rtl) {
+  if (panels.length <= 1) return panels.slice();
+
+  const h = findReadingCut(panels, false); // horizontal cut → rows, top to bottom
+  if (h) return cutPanels(h[0], rtl).concat(cutPanels(h[1], rtl));
+
+  const v = findReadingCut(panels, true); // vertical cut → columns, by reading direction
+  if (v) {
+    return rtl
+      ? cutPanels(v[1], rtl).concat(cutPanels(v[0], rtl))
+      : cutPanels(v[0], rtl).concat(cutPanels(v[1], rtl));
+  }
+
+  // No clean cut: cluster into rows by top edge, rows top→bottom, within a row by direction.
+  const byTop = panels.slice().sort((a, b) => a.top - b.top);
+  const rows = [];
+  for (const p of byTop) {
+    const row = rows[rows.length - 1];
+    if (row && p.top - row[0].top <= ORDER_ROW_BAND) row.push(p);
+    else rows.push([p]);
+  }
+  return rows.flatMap(row =>
+    row.slice().sort((a, b) => (rtl ? b.left - a.left : a.left - b.left)),
+  );
+}
+
+function findReadingCut(panels, vertical) {
+  const start = (p) => (vertical ? p.left : p.top);
+  const end = (p) => (vertical ? p.right : p.bottom);
+  const maxEnd = Math.max(...panels.map(end));
+  const candidates = [...new Set([...panels.map(end), ...panels.map(start)])].sort((a, b) => a - b);
+
+  for (const line of candidates) {
+    if (line >= maxEnd) continue;
+    const first = [];
+    const second = [];
+    let valid = true;
+    for (const p of panels) {
+      const s = start(p);
+      const e = end(p);
+      if (e <= line) {
+        first.push(p);
+      } else if (s >= line) {
+        second.push(p);
+      } else {
+        const len = Math.max(e - s, 1e-4);
+        const crossDepth = Math.min(e - line, line - s);
+        if (crossDepth / len > STRADDLE_TOLERANCE) { valid = false; break; }
+        if (line - s >= e - line) first.push(p);
+        else second.push(p);
+      }
+    }
+    if (valid && first.length && second.length) return [first, second];
+  }
+  return null;
+}
+
+/** True when the page's current panel array is already in the order the ported algorithm would
+    produce — i.e. the algorithm gets this page right and the manual order adds no signal.
+    A false here marks a page whose hand-ordered export is a useful tuning fixture. */
+function panelOrderMatchesAlgorithm(page) {
+  const rtl = (page.payload && page.payload.direction) === 'RTL';
+  const panels = page.boxes.filter(b => b.cls === 'panel');
+  if (panels.length <= 1) return true;
+  const algo = orderPanelsForReading(panels, rtl);
+  return algo.every((p, i) => p === panels[i]);
 }
 
 function groundTruthToBoxes(gt) {
@@ -541,8 +663,12 @@ els.openFolderBtn.onclick = async () => {
     } catch (e) {
       if (e.name === 'AbortError') return;
       // Fall through to the input-based folder picker (desktop Firefox: read-only, works via
-      // webkitdirectory even without File System Access API support).
+      // webkitdirectory even without File System Access API support). Say why, since the read-only
+      // path silently loses live in-place saving — the resulting mode is stated in the header too.
+      showWarnings([`Live folder write unavailable (${e.name || 'error'}: ${e.message}). Loading read-only — edits are held in browser storage and saved via Export all.`]);
     }
+  } else {
+    showWarnings(['This browser has no folder-write API — edits are held in browser storage and saved via Export all.']);
   }
   els.folderInput.click();
 };
@@ -566,10 +692,14 @@ function refreshChrome() {
   els.viewport.hidden = !hasPages;
   els.saveModeStatus.textContent = !hasPages
     ? 'No batch loaded'
-    : `${state.pages.length} page(s) — ${state.dirHandle ? 'live folder write' : 'download on save'}`;
+    : `${state.pages.length} page(s) — ${state.dirHandle ? 'live folder write' : 'held locally, Export all for a zip'}`;
   els.prevBtn.disabled = !hasPages || state.currentIndex <= 0;
   els.nextBtn.disabled = !hasPages || state.currentIndex >= state.pages.length - 1;
+  // "Save page" is the live in-place folder write — meaningless without a writable folder handle,
+  // where "Export all" (zip of every labeled page) is the only way out.
+  els.saveBtn.hidden = !state.dirHandle;
   els.saveBtn.disabled = !hasPages;
+  els.exportAllBtn.disabled = !hasPages || !state.pages.some(p => p.dirty || p.hasSavedGroundTruth);
   updatePageLabel();
   renderPageList();
 }
@@ -690,12 +820,38 @@ function computeClassRanks(boxes) {
 function drawBoxes() {
   const page = state.pages[state.currentIndex];
   els.boxLayer.innerHTML = '';
-  if (!page) { renderBoxList([]); return; }
+  if (!page) { renderBoxList([]); updatePanelOrderFlag(null); return; }
   const ranks = computeClassRanks(page.boxes);
   page.boxes.forEach((box, i) => els.boxLayer.appendChild(buildBoxEl(box, i, ranks[i])));
   els.boxLayer.classList.toggle('has-selection', state.selection !== null);
   renderBoxList(page.boxes, ranks);
+  updatePanelOrderFlag(page);
 }
+
+function updatePanelOrderFlag(page) {
+  const panelCount = page ? page.boxes.filter(b => b.cls === 'panel').length : 0;
+  els.autoOrderBtn.disabled = !page || panelCount < 2;
+  els.panelOrderFlag.textContent = (page && panelCount >= 2 && !panelOrderMatchesAlgorithm(page))
+    ? '≠ app order'
+    : '';
+}
+
+/** Re-sort the current page's panels into the ported algorithm's reading order, in place. Texts
+    keep their order; selection is preserved by reference. Marked dirty like any other edit. */
+els.autoOrderBtn.onclick = () => {
+  const page = state.pages[state.currentIndex];
+  if (!page) return;
+  const rtl = (page.payload && page.payload.direction) === 'RTL';
+  const panels = page.boxes.filter(b => b.cls === 'panel');
+  if (panels.length < 2) return;
+  const selectedRef = state.selection !== null ? page.boxes[state.selection] : null;
+  snapshotBoxes(page);
+  const ordered = orderPanelsForReading(panels, rtl);
+  page.boxes = ordered.concat(page.boxes.filter(b => b.cls === 'text'));
+  markDirty(page);
+  state.selection = selectedRef ? page.boxes.indexOf(selectedRef) : null;
+  drawBoxes();
+};
 
 /** The sidebar's two clickable lists (Panels, Text) — the direct fix for picking a box out of a
     dense/overlapping stack by name instead of by precise tap. Split by class because that's how
@@ -831,7 +987,7 @@ function endRowDrag(e) {
 
   const newClassOrder = order.map((classLocalIndex) => classBoxesOriginal[classLocalIndex]);
   page.boxes = replaceClassInPlace(page.boxes, cls, newClassOrder);
-  page.dirty = true;
+  markDirty(page);
   if (selectedRef) state.selection = page.boxes.indexOf(selectedRef);
   drawBoxes();
 }
@@ -1131,7 +1287,7 @@ function onPointerMove(e) {
     const box = page.boxes[gesture.index];
     box.left = left; box.top = top; box.right = left + w; box.bottom = top + h;
     positionBoxEl(els.boxLayer.children[gesture.index], box);
-    page.dirty = true;
+    markDirty(page);
     return;
   }
 
@@ -1144,7 +1300,7 @@ function onPointerMove(e) {
     if (gesture.corner.includes('w')) box.left = clamp(now.x, 0, orig.right - 0.01);
     if (gesture.corner.includes('e')) box.right = clamp(now.x, orig.left + 0.01, 1);
     positionBoxEl(els.boxLayer.children[gesture.index], box);
-    page.dirty = true;
+    markDirty(page);
     return;
   }
 }
@@ -1163,7 +1319,7 @@ function onPointerUp(e) {
       const page = state.pages[state.currentIndex];
       snapshotBoxes(page);
       page.boxes.push({ cls: gesture.cls, ...p });
-      page.dirty = true;
+      markDirty(page);
       drawBoxes();
       selectBox(page.boxes.length - 1);
     }
@@ -1202,7 +1358,7 @@ function setSelectedBoxClass(cls) {
   if (box.cls === cls) return;
   snapshotBoxes(page);
   box.cls = cls;
-  page.dirty = true;
+  markDirty(page);
   drawBoxes();
 }
 
@@ -1221,7 +1377,7 @@ function deleteBoxAt(i) {
   if (!page || i == null) return;
   snapshotBoxes(page);
   page.boxes.splice(i, 1);
-  page.dirty = true;
+  markDirty(page);
   deselectBox();
 }
 
@@ -1244,7 +1400,7 @@ function undo() {
   const page = state.pages[state.currentIndex];
   if (!page || !page.undoStack || page.undoStack.length === 0) return;
   page.boxes = page.undoStack.pop();
-  page.dirty = true;
+  markDirty(page);
   deselectBox();
 }
 
@@ -1263,7 +1419,8 @@ window.addEventListener('keydown', (e) => {
   }
   if ((e.ctrlKey || e.metaKey) && e.key.toLowerCase() === 's') {
     e.preventDefault();
-    els.saveBtn.click();
+    // Live-folder mode: write the current page in place. Otherwise: export the whole batch.
+    (state.dirHandle ? els.saveBtn : els.exportAllBtn).click();
     return;
   }
   if (e.ctrlKey || e.metaKey || e.altKey) return; // reserved for browser/OS shortcuts
@@ -1365,13 +1522,201 @@ els.classText.onclick = () => { state.activeClass = 'text'; updateClassButtons()
 updateClassButtons();
 
 /* ---------------------------------------------------------------------- *
+ * Local persistence — IndexedDB
+ *
+ * Every edit is mirrored (debounced) into IndexedDB keyed by page stem, so
+ * closing/reloading the tab and re-opening the same folder resumes exactly
+ * where you left off — with no per-page file downloads in between. A page
+ * that already has a saved on-disk `<stem>.ground_truth.json` is treated as
+ * done and always wins over a stored in-progress entry for the same stem.
+ * ---------------------------------------------------------------------- */
+
+const IDB_NAME = 'panel-ground-truth-labeler';
+const IDB_STORE = 'pages';
+let idbPromise = null;
+
+function idb() {
+  if (idbPromise) return idbPromise;
+  idbPromise = new Promise((resolve, reject) => {
+    const req = indexedDB.open(IDB_NAME, 1);
+    req.onupgradeneeded = () => {
+      if (!req.result.objectStoreNames.contains(IDB_STORE)) {
+        req.result.createObjectStore(IDB_STORE, { keyPath: 'stem' });
+      }
+    };
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  }).catch(err => {
+    // Private browsing / storage blocked: degrade to in-memory only rather than break editing.
+    showWarnings([`Browser storage unavailable (${(err && err.message) || err}) — edits are kept in memory only until you Export all.`]);
+    return null;
+  });
+  return idbPromise;
+}
+
+async function idbTx(mode, fn) {
+  const db = await idb();
+  if (!db) return null;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(IDB_STORE, mode);
+    let result;
+    Promise.resolve(fn(tx.objectStore(IDB_STORE))).then(r => { result = r; });
+    tx.oncomplete = () => resolve(result);
+    tx.onerror = () => reject(tx.error);
+    tx.onabort = () => reject(tx.error);
+  });
+}
+
+function idbPutPage(page, exported) {
+  return idbTx('readwrite', store => store.put({
+    stem: page.stem,
+    boxes: page.boxes,
+    savedAt: Date.now(),
+    exported: !!exported, // once true, reopening the folder shows the page as done, not "resumed"
+  })).catch(() => {});
+}
+
+function idbGetAll() {
+  return idbTx('readonly', store => new Promise(res => {
+    const r = store.getAll();
+    r.onsuccess = () => res(r.result || []);
+    r.onerror = () => res([]);
+  })).then(v => v || []);
+}
+
+const persistTimers = new Map();
+
+/** Mark a page edited and schedule its IndexedDB mirror. Used in place of a bare
+    `page.dirty = true` on every mutation path so none can forget to persist. */
+function markDirty(page) {
+  if (!page) return;
+  page.dirty = true;
+  // Cheap O(1) refresh — the edit paths (draw/move/resize/reorder/flip/delete/undo) don't call
+  // refreshChrome, so without this the button stays greyed until the next navigation or save.
+  els.exportAllBtn.disabled = false;
+  clearTimeout(persistTimers.get(page.stem));
+  persistTimers.set(page.stem, setTimeout(() => {
+    persistTimers.delete(page.stem);
+    idbPutPage(page);
+  }, 400));
+}
+
+const boxSig = (boxes) =>
+  boxes.map(b => `${b.cls}:${b.left},${b.top},${b.right},${b.bottom}`).join('|');
+
+/** Pull in-progress edits saved to IndexedDB into any freshly-loaded page that doesn't already
+    have a saved on-disk ground truth (those are done and take precedence). */
+async function adoptStoredEdits(warnings) {
+  const stored = await idbGetAll();
+  if (!stored.length) return;
+  const byStem = new Map(stored.map(r => [r.stem, r]));
+  let resumed = 0, restored = 0;
+  for (const page of state.pages) {
+    if (page.hasSavedGroundTruth || page._storedChecked) continue;
+    page._storedChecked = true;
+    const rec = byStem.get(page.stem);
+    if (!rec || !Array.isArray(rec.boxes)) continue;
+    if (rec.exported) {
+      // Already exported in a previous session (download mode leaves no on-disk file to detect) —
+      // load the boxes and mark done rather than nagging to re-export.
+      page.boxes = rec.boxes;
+      page.hasSavedGroundTruth = true;
+      restored++;
+    } else if (boxSig(rec.boxes) !== boxSig(page.boxes)) {
+      page.boxes = rec.boxes;
+      page.dirty = true;
+      resumed++;
+    }
+  }
+  if (resumed || restored) {
+    const bits = [];
+    if (resumed) bits.push(`${resumed} in-progress`);
+    if (restored) bits.push(`${restored} already-exported`);
+    const tail = resumed
+      ? ' In-progress pages still need Export all to save; Ctrl+Z on a page discards its stored edits.'
+      : '';
+    warnings.push(`Loaded ${bits.join(' and ')} page(s) from browser storage.${tail}`);
+  }
+}
+
+/* ---------------------------------------------------------------------- *
+ * Store-only .zip writer — no dependency, no compression (label JSON is
+ * tiny). Verified round-tripping through a real unzip.
+ * ---------------------------------------------------------------------- */
+
+const CRC_TABLE = (() => {
+  const t = new Uint32Array(256);
+  for (let n = 0; n < 256; n++) {
+    let c = n;
+    for (let k = 0; k < 8; k++) c = c & 1 ? 0xedb88320 ^ (c >>> 1) : c >>> 1;
+    t[n] = c >>> 0;
+  }
+  return t;
+})();
+
+function crc32(bytes) {
+  let c = 0xffffffff;
+  for (let i = 0; i < bytes.length; i++) c = CRC_TABLE[(c ^ bytes[i]) & 0xff] ^ (c >>> 8);
+  return (c ^ 0xffffffff) >>> 0;
+}
+
+/** entries: [{ name, text }] -> Blob of a store-only .zip */
+function buildZipBlob(entries) {
+  const enc = new TextEncoder();
+  const parts = [];
+  const central = [];
+  let offset = 0;
+  const push = (arr) => { parts.push(arr); offset += arr.length; };
+  const u16 = (v) => [v & 0xff, (v >>> 8) & 0xff];
+  const u32 = (v) => [v & 0xff, (v >>> 8) & 0xff, (v >>> 16) & 0xff, (v >>> 24) & 0xff];
+  const DOS_TIME = 0, DOS_DATE = 0x0021; // 1980-01-01 — we don't track mtime
+
+  for (const { name, text } of entries) {
+    const nameBytes = enc.encode(name);
+    const data = enc.encode(text);
+    const crc = crc32(data);
+    const localOffset = offset;
+    push(Uint8Array.from([
+      ...u32(0x04034b50), ...u16(20), ...u16(0x0800), ...u16(0), // UTF-8 name flag, store
+      ...u16(DOS_TIME), ...u16(DOS_DATE),
+      ...u32(crc), ...u32(data.length), ...u32(data.length),
+      ...u16(nameBytes.length), ...u16(0),
+    ]));
+    push(nameBytes);
+    push(data);
+    central.push(Uint8Array.from([
+      ...u32(0x02014b50), ...u16(20), ...u16(20), ...u16(0x0800), ...u16(0),
+      ...u16(DOS_TIME), ...u16(DOS_DATE),
+      ...u32(crc), ...u32(data.length), ...u32(data.length),
+      ...u16(nameBytes.length), ...u16(0), ...u16(0),
+      ...u16(0), ...u16(0), ...u32(0), ...u32(localOffset),
+    ]));
+    central.push(nameBytes);
+  }
+
+  const cdStart = offset;
+  for (const arr of central) push(arr);
+  const cdSize = offset - cdStart;
+  push(Uint8Array.from([
+    ...u32(0x06054b50), ...u16(0), ...u16(0),
+    ...u16(entries.length), ...u16(entries.length),
+    ...u32(cdSize), ...u32(cdStart), ...u16(0),
+  ]));
+
+  return new Blob(parts, { type: 'application/zip' });
+}
+
+/* ---------------------------------------------------------------------- *
  * Navigation & saving
  * ---------------------------------------------------------------------- */
 
 async function goTo(index) {
   if (index < 0 || index >= state.pages.length) return;
   const current = state.pages[state.currentIndex];
-  if (current && current.dirty) await saveGroundTruth(current);
+  // Live folder: keep each page's file current as you move — a silent in-place write.
+  // Download mode: nothing to do — the edit is already mirrored to IndexedDB, and the whole
+  // batch leaves as one zip via Export all rather than a download per Next.
+  if (current && current.dirty && state.dirHandle) await writePageToFolder(current);
   state.currentIndex = index;
   renderPage(index);
   refreshChrome();
@@ -1379,49 +1724,69 @@ async function goTo(index) {
 els.prevBtn.onclick = () => goTo(state.currentIndex - 1);
 els.nextBtn.onclick = () => goTo(state.currentIndex + 1);
 
-els.saveBtn.onclick = async () => {
-  const page = state.pages[state.currentIndex];
-  if (!page) return;
-  await saveGroundTruth(page);
-  refreshChrome();
-};
-
 function boxesToGroundTruth(page) {
   const strip = ({ left, top, right, bottom }) => ({ left, top, right, bottom });
   return {
+    // panels[] is written in on-screen order — your hand-verified reading order — since that's
+    // what these files are for: tuning PanelOrdering.kt. direction is carried through so a
+    // reading-order fixture is self-contained (RTL flips within-row order).
+    direction: (page.payload && page.payload.direction) || 'RTL',
     panels: page.boxes.filter(b => b.cls === 'panel').map(strip),
     texts: page.boxes.filter(b => b.cls === 'text').map(strip),
+    panelOrderMatchesAlgorithm: panelOrderMatchesAlgorithm(page),
     labeledAt: Date.now(),
   };
 }
 
-async function saveGroundTruth(page) {
+/** Live in-place write of one page's ground truth. Only reachable when state.dirHandle is set. */
+async function writePageToFolder(page) {
   const filename = `${page.stem}.ground_truth.json`;
   const text = JSON.stringify(boxesToGroundTruth(page), null, 2);
-
-  if (state.dirHandle) {
-    try {
-      const fileHandle = await state.dirHandle.getFileHandle(filename, { create: true });
-      const writable = await fileHandle.createWritable();
-      await writable.write(text);
-      await writable.close();
-      page.dirty = false;
-      page.hasSavedGroundTruth = true;
-      updatePageLabel();
-      return;
-    } catch (e) {
-      showWarnings([`Couldn't write "${filename}" to the folder (${e.message}) — downloading instead.`]);
-    }
+  try {
+    const fileHandle = await state.dirHandle.getFileHandle(filename, { create: true });
+    const writable = await fileHandle.createWritable();
+    await writable.write(text);
+    await writable.close();
+    page.dirty = false;
+    page.hasSavedGroundTruth = true;
+    clearTimeout(persistTimers.get(page.stem));
+    persistTimers.delete(page.stem);
+    updatePageLabel();
+  } catch (e) {
+    showWarnings([`Couldn't write "${filename}" to the folder (${e.message}). The edit is still saved in browser storage — use Export all for a zip.`]);
   }
-
-  downloadText(filename, text);
-  page.dirty = false;
-  page.hasSavedGroundTruth = true;
-  updatePageLabel();
 }
 
-function downloadText(filename, text) {
-  const blob = new Blob([text], { type: 'application/json' });
+els.saveBtn.onclick = async () => {
+  const page = state.pages[state.currentIndex];
+  if (!page || !state.dirHandle) return;
+  await writePageToFolder(page);
+  refreshChrome();
+};
+
+els.exportAllBtn.onclick = () => {
+  const labeled = state.pages.filter(p => p.dirty || p.hasSavedGroundTruth);
+  if (labeled.length === 0) {
+    showWarnings(['No labeled pages yet — adjust some boxes first.']);
+    return;
+  }
+  const entries = labeled.map(p => ({
+    name: `${p.stem}.ground_truth.json`,
+    text: JSON.stringify(boxesToGroundTruth(p), null, 2),
+  }));
+  downloadBlob('panel_ground_truth.zip', buildZipBlob(entries));
+  for (const p of labeled) {
+    p.dirty = false;
+    p.hasSavedGroundTruth = true;
+    clearTimeout(persistTimers.get(p.stem));
+    persistTimers.delete(p.stem);
+    idbPutPage(p, true);
+  }
+  updatePageLabel();
+  refreshChrome();
+};
+
+function downloadBlob(filename, blob) {
   const url = URL.createObjectURL(blob);
   const a = document.createElement('a');
   a.href = url; a.download = filename;
@@ -1430,6 +1795,8 @@ function downloadText(filename, text) {
 }
 
 window.addEventListener('beforeunload', (e) => {
+  // IndexedDB already holds these edits (see markDirty), but the debounce window plus "not yet
+  // exported to a zip" still warrants a nudge before an accidental close.
   if (state.pages.some(p => p.dirty)) { e.preventDefault(); e.returnValue = ''; }
 });
 window.addEventListener('resize', () => { if (state.currentIndex >= 0) fitToViewport(); });
