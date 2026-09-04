@@ -8,11 +8,12 @@ import android.util.AttributeSet
 import android.view.GestureDetector
 import android.view.MotionEvent
 import com.davemorrissey.labs.subscaleview.SubsamplingScaleImageView
+import eu.kanade.tachiyomi.ui.reader.viewer.isCompactWidth
+import eu.kanade.tachiyomi.ui.reader.viewer.panelStopScaleAndCenter
 import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
 import java.util.concurrent.Executors
 import kotlin.math.abs
-import kotlin.math.min
 
 /**
  * Custom SubsamplingScaleImageView for Guided View (Panel-by-Panel mode).
@@ -194,24 +195,15 @@ class PanelSubsamplingImageView @JvmOverloads constructor(
         }
     }
 
+    /**
+     * Delegates to the shared [panelStopScaleAndCenter] so this view's own rotation/clamp paths
+     * frame a panel identically to [ReaderPageImageView]'s navigation path — both write
+     * [panelBaseScale], so a divergence here would make a panel jump size on rotate. See the
+     * "two independent pipelines must agree" note in CLAUDE.md.
+     */
     fun computePanelTarget(rect: PanelRect, viewW: Int, viewH: Int): Pair<Float, PointF> {
-        val realAspect = (rect.width * sWidth) / (rect.height * sHeight)
-        val isPortrait = viewH > viewW
-        val heightBudget = if (isPortrait && realAspect < TALL_PANEL_ASPECT_THRESHOLD) {
-            viewH * MAX_TALL_PANEL_HEIGHT_FRACTION
-        } else {
-            viewH.toFloat()
-        }
-        val widthBudget = if (isPortrait) viewW.toFloat() else viewW * LANDSCAPE_MAX_FILL_FRACTION
-        val targetScale = min(
-            widthBudget / (rect.width * sWidth),
-            heightBudget / (rect.height * sHeight),
-        )
-        val center = PointF(
-            (rect.left + rect.width / 2f) * sWidth,
-            (rect.top + rect.height / 2f) * sHeight,
-        )
-        return targetScale to center
+        val t = panelStopScaleAndCenter(rect, viewW, viewH, sWidth, sHeight, isCompactWidth(context))
+        return t.scale to PointF(t.centerX, t.centerY)
     }
 
     override fun onDraw(canvas: Canvas) {
@@ -334,9 +326,20 @@ class PanelSubsamplingImageView @JvmOverloads constructor(
         val targetY = clampAxis(currentCenter.y, vH, rect.top * sHeight, rect.bottom * sHeight)
 
         if (abs(targetX - currentCenter.x) > 0.5f || abs(targetY - currentCenter.y) > 0.5f) {
+            // Throttled: this runs every onDraw frame and floods the buffer during any pan/fling,
+            // pushing the page-transition logs we actually care about out of the 5 MiB ring.
+            val now = android.os.SystemClock.uptimeMillis()
+            if (now - lastConstrainLogMs > 400L) {
+                lastConstrainLogMs = now
+                logcat(LogPriority.DEBUG) {
+                    "panelZoomDbg constrainPanLive correcting center ($currentCenter -> ($targetX,$targetY)) s=$s rect=(${rect.left},${rect.top},${rect.right},${rect.bottom}) sWxH=${sWidth}x$sHeight"
+                }
+            }
             setScaleAndCenter(s, PointF(targetX, targetY))
         }
     }
+
+    private var lastConstrainLogMs = 0L
 
     /**
      * The clamped center for one axis: if the viewport is already at least as large as the
@@ -394,10 +397,6 @@ class PanelSubsamplingImageView @JvmOverloads constructor(
     }
 
     companion object {
-        private const val TALL_PANEL_ASPECT_THRESHOLD = 0.5f
-        private const val MAX_TALL_PANEL_HEIGHT_FRACTION = 0.6f
-        private const val LANDSCAPE_MAX_FILL_FRACTION = 0.92f
-
         // Shared across every PanelSubsamplingImageView instance (the current page and any
         // preloaded neighbors), not one pool per view — tile decoding is CPU-bound, so one pool
         // sized to the device's core count avoids oversubscribing regardless of how many panel

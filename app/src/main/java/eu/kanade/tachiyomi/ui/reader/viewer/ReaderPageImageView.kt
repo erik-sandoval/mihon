@@ -791,6 +791,10 @@ open class ReaderPageImageView @JvmOverloads constructor(
         swapView.alpha = 1f
         swapView.clipBounds = null
         pageView = swapView
+        logcat(LogPriority.DEBUG) {
+            "panelZoomDbg completeProcessedSwapTransition clip cleared, pageView=swapView@${System.identityHashCode(swapView)} " +
+                "scale=${swapView.scale} center=${swapView.center} panelIdx=$panelStopIndex"
+        }
 
         outgoingProcessedView?.let { outgoingView ->
             if (outgoingView !== swapView) {
@@ -871,6 +875,12 @@ open class ReaderPageImageView @JvmOverloads constructor(
                                 targetHeight > 0 &&
                                 targetScale > targetMinScale + 0.01f
 
+                        logcat(LogPriority.DEBUG) {
+                            "panelZoomDbg animateProcessedSwap.onReady wasZoomed=$wasZoomed panelMode=$panelModeActive " +
+                                "old(scale=$targetScale,minScale=$targetMinScale,center=$targetCenter,sWxH=${targetWidth}x$targetHeight) " +
+                                "new(sWxH=${sWidth}x$sHeight,minScale=$minScale) stopIdx=$panelStopIndex"
+                        }
+
                         if (wasZoomed) {
                             val mappedCenter = PointF(
                                 (targetCenter.x / targetWidth) * sWidth,
@@ -898,14 +908,22 @@ open class ReaderPageImageView @JvmOverloads constructor(
                                 maxScale = baseScale * 3.0f
                                 setDoubleTapZoomScale(baseScale * 2.0f)
                                 setDoubleTapZoomStyle(SubsamplingScaleImageView.ZOOM_FOCUS_CENTER)
-                                setScaleAndCenter(
-                                    mappedPanelZoomScale(targetScale, targetMinScale, baseScale, maxScale),
-                                    mappedCenter,
-                                )
+                                val mappedScale = mappedPanelZoomScale(targetScale, targetMinScale, baseScale, maxScale)
+                                setScaleAndCenter(mappedScale, mappedCenter)
                                 spotlightFor(this@apply).targetRect = panelStop
+                                logcat(LogPriority.DEBUG) {
+                                    "panelZoomDbg animateProcessedSwap wasZoomed-branch (panel) base=$baseScale " +
+                                        "mapped(scale=$mappedScale) old(scale=$targetScale,minScale=$targetMinScale) " +
+                                        "-> post(scale=${this@apply.scale}, center=${this@apply.center})"
+                                }
                             } else {
                                 val zoomFactor = targetScale / targetMinScale
-                                setScaleAndCenter((minScale * zoomFactor).coerceIn(minScale, maxScale), mappedCenter)
+                                val mappedScale = (minScale * zoomFactor).coerceIn(minScale, maxScale)
+                                setScaleAndCenter(mappedScale, mappedCenter)
+                                logcat(LogPriority.DEBUG) {
+                                    "panelZoomDbg animateProcessedSwap wasZoomed-branch zoomFactor=$zoomFactor " +
+                                        "mapped(scale=$mappedScale, center=$mappedCenter) -> post(scale=${this@apply.scale}, center=${this@apply.center})"
+                                }
                             }
                         } else if (panelModeActive) {
                             // The pre-swap view was showing panel-by-panel's full-page/first stop
@@ -946,6 +964,9 @@ open class ReaderPageImageView @JvmOverloads constructor(
                         val rawClipRight = contentLeft + contentWidth * revealEnd
                         val clipRight = if (rawClipRight.isNaN()) viewWidth else rawClipRight.roundToInt().coerceIn(clipLeft + 1, viewWidth)
                         clipBounds = Rect(clipLeft, 0, clipRight, height)
+                        logcat(LogPriority.DEBUG) {
+                            "panelZoomDbg animateProcessedSwap reveal clip=$clipBounds imageRect=$imageRect contentLeft=$contentLeft contentWidth=$contentWidth"
+                        }
                         alpha = 0f
 
                         val animator = ValueAnimator.ofFloat(0f, 1f).apply {
@@ -1483,6 +1504,10 @@ open class ReaderPageImageView @JvmOverloads constructor(
             else -> panelStopIndexOverride?.coerceIn(0, panelStops.lastIndex)
                 ?: if (panelStopsEnterForward) 0 else panelStops.lastIndex
         }
+        logcat(LogPriority.DEBUG) {
+            "panelZoomDbg setPanelStops count=${panelStops.size} choseIdx=$panelStopIndex forceFirst=$forceFirstStop " +
+                "anchorRect=${anchorRect != null} anchorOverride=${anchorOverride != null} enterFwd=$panelStopsEnterForward"
+        }
         panelStopIndexOverride = null
         panelStopAnchorOverride = null
         userMovedAwayFromStop = false
@@ -1532,16 +1557,24 @@ open class ReaderPageImageView @JvmOverloads constructor(
     fun canRetreatPanelStop(): Boolean = panelStops.isNotEmpty() && panelStopIndex > 0
 
     fun advancePanelStop() {
+        debugZoomState("advancePanelStop enter")
         syncPanelStopIndexToCurrentView()
-        if (!canAdvancePanelStop()) return
+        if (!canAdvancePanelStop()) {
+            logcat(LogPriority.DEBUG) { "panelTapDbg advancePanelStop BAILED after sync (idx=$panelStopIndex at end)" }
+            return
+        }
         panelStopIndex++
         animateToPanelStop(panelStopIndex)
         onPanelStopChanged?.invoke(panelStopIndex)
     }
 
     fun retreatPanelStop() {
+        debugZoomState("retreatPanelStop enter")
         syncPanelStopIndexToCurrentView()
-        if (!canRetreatPanelStop()) return
+        if (!canRetreatPanelStop()) {
+            logcat(LogPriority.DEBUG) { "panelTapDbg retreatPanelStop BAILED after sync (idx=$panelStopIndex at 0)" }
+            return
+        }
         panelStopIndex--
         animateToPanelStop(panelStopIndex)
         onPanelStopChanged?.invoke(panelStopIndex)
@@ -1553,7 +1586,10 @@ open class ReaderPageImageView @JvmOverloads constructor(
      * from the right place instead of jumping relative to a stale index.
      */
     private fun syncPanelStopIndexToCurrentView() {
-        if (!userMovedAwayFromStop) return
+        if (!userMovedAwayFromStop) {
+            logcat(LogPriority.DEBUG) { "panelTapDbg syncPanelStopIndex skipped (userMovedAwayFromStop=false) idx=$panelStopIndex" }
+            return
+        }
         val view = pageView as? SubsamplingScaleImageView ?: return
         val center = view.center ?: return
         if (panelStops.isEmpty()) return
@@ -1563,6 +1599,9 @@ open class ReaderPageImageView @JvmOverloads constructor(
             val dy = target.y - center.y
             dx * dx + dy * dy
         } ?: return
+        logcat(LogPriority.DEBUG) {
+            "panelTapDbg syncPanelStopIndex $panelStopIndex -> $nearestIndex (viewCenter=$center scale=${view.scale})"
+        }
         panelStopIndex = nearestIndex
         userMovedAwayFromStop = false
         setSpotlightVisible(true)
@@ -1575,9 +1614,21 @@ open class ReaderPageImageView @JvmOverloads constructor(
         return view.scale > (baseScale * 1.08f)
     }
 
+    /** Verbose one-shot dump of the zoom/stop state — call from a gesture handler, not the gate. */
+    fun debugZoomState(where: String) {
+        val view = pageView as? SubsamplingScaleImageView
+        val baseScale = if (view is PanelSubsamplingImageView && (view.panelBaseScale) > 0f) view.panelBaseScale else view?.minScale
+        logcat(LogPriority.DEBUG) {
+            "panelTapDbg [$where] idx=$panelStopIndex/${panelStops.lastIndex} scale=${view?.scale} baseScale=$baseScale " +
+                "panelBaseScale=${(view as? PanelSubsamplingImageView)?.panelBaseScale} minScale=${view?.minScale} " +
+                "userMovedAway=$userMovedAwayFromStop isReady=${view?.isReady} center=${view?.center}"
+        }
+    }
+
     override fun onSizeChanged(w: Int, h: Int, oldw: Int, oldh: Int) {
         super.onSizeChanged(w, h, oldw, oldh)
         if (panelModeActive && panelStops.isNotEmpty() && (w != oldw || h != oldh) && w > 0 && h > 0) {
+            logcat(LogPriority.DEBUG) { "panelZoomDbg onSizeChanged ${oldw}x$oldh -> ${w}x$h re-jump idx=$panelStopIndex" }
             jumpToPanelStop(panelStopIndex)
         }
     }
@@ -1585,6 +1636,11 @@ open class ReaderPageImageView @JvmOverloads constructor(
     private fun jumpToPanelStop(index: Int) {
         val view = pageView as? SubsamplingScaleImageView ?: return
         val target = panelStops.getOrNull(index) ?: return
+        logcat(LogPriority.DEBUG) {
+            "panelZoomDbg jumpToPanelStop idx=$index/${panelStops.lastIndex} view=${view.javaClass.simpleName}@${System.identityHashCode(view)} " +
+                "isReady=${view.isReady} sWxH=${view.sWidth}x${view.sHeight} viewWxH=${view.width}x${view.height} " +
+                "cur(scale=${view.scale}, center=${view.center}) enhanced=$isShowingEnhancedFile swapping=${processedSwapView != null} clip=$clipBounds"
+        }
         if (panelModeActive) spotlightFor(view).targetRect = target
         if (view.isReady) {
             val (scale, center) = view.panelStopTarget(target)
@@ -1602,7 +1658,11 @@ open class ReaderPageImageView @JvmOverloads constructor(
             }
             view.setScaleAndCenter(scale, center)
             setSpotlightVisible(true)
+            logcat(LogPriority.DEBUG) {
+                "panelZoomDbg jumpToPanelStop APPLIED idx=$index target=$scale/$center -> post(scale=${view.scale}, center=${view.center})"
+            }
         } else {
+            logcat(LogPriority.DEBUG) { "panelZoomDbg jumpToPanelStop DEFERRED idx=$index (view not ready)" }
             view.setOnImageEventListener(
                 object : SubsamplingScaleImageView.DefaultOnImageEventListener() {
                     override fun onReady() {
@@ -1643,6 +1703,10 @@ open class ReaderPageImageView @JvmOverloads constructor(
     private fun animateToPanelStop(index: Int) {
         val view = pageView as? SubsamplingScaleImageView ?: return
         val target = panelStops.getOrNull(index) ?: return
+        logcat(LogPriority.DEBUG) {
+            "panelZoomDbg animateToPanelStop idx=$index/${panelStops.lastIndex} isReady=${view.isReady} " +
+                "cur(scale=${view.scale}, center=${view.center}) sWxH=${view.sWidth}x${view.sHeight} enhanced=$isShowingEnhancedFile"
+        }
         if (!view.isReady) {
             // pageView is assigned the moment a fresh SubsamplingScaleImageView is created (see
             // prepareNonAnimatedImageView), before its image has actually decoded — a fast
@@ -1740,45 +1804,13 @@ open class ReaderPageImageView @JvmOverloads constructor(
     }
 
     private fun SubsamplingScaleImageView.panelStopTarget(rect: PanelRect): Pair<Float, PointF> {
-        // Uniform scaling can't change a rect's own shape — a fit-both-dimensions scale for a
-        // genuinely tall/narrow panel (real width:height below [TALL_PANEL_ASPECT_THRESHOLD]) still
-        // stretches it to fill the full screen height edge-to-edge, since that's the axis that
-        // binds first. Capping the height budget for that case only shrinks the render (more margin
-        // top/bottom too), without cropping or widening the shown content at all.
-        //
-        // Only applies in portrait (view taller than wide): that's the orientation where the screen
-        // itself is generous with vertical space, so an extreme sliver stretches to fill all of it.
-        // In landscape the view's own height is already scarce, so the uncapped fit-both scale
-        // already shrinks a narrow panel sensibly on its own — piling this cap on top there just
-        // makes it needlessly tiny (confirmed on-device: the same panel that looked "super tall and
-        // skinny" in portrait looked like a small isolated sliver swimming in blank space once
-        // rotated to landscape).
-        val realAspect = (rect.width * sWidth) / (rect.height * sHeight)
-        val isPortrait = height > width
-        val heightBudget = if (isPortrait && realAspect < TALL_PANEL_ASPECT_THRESHOLD) {
-            height * MAX_TALL_PANEL_HEIGHT_FRACTION
-        } else {
-            height.toFloat()
+        val t = panelStopScaleAndCenter(rect, width, height, sWidth, sHeight, isCompactWidth(context))
+        logcat(LogPriority.DEBUG) {
+            "panelZoomDbg panelStopTarget rect=(${rect.left},${rect.top},${rect.right},${rect.bottom}) " +
+                "sWxH=${sWidth}x$sHeight viewWxH=${width}x$height portrait=${t.portrait} realAspect=${t.realAspect} " +
+                "budgets=(w=${t.widthBudget},h=${t.heightBudget}) -> scale=${t.scale} center=(${t.centerX},${t.centerY})"
         }
-        // In landscape, a panel whose own aspect happens to be close to the screen's own wide
-        // aspect fits both dimensions almost exactly, filling the view completely edge-to-edge with
-        // zero breathing room — confirmed on-device to look wrong ("I don't like how it fills the
-        // entire screen"). Only the width side gets a margin (confirmed: top/bottom should stay as
-        // they were) — landscape screens are wide, so left/right is where a panel-by-panel stop
-        // actually has room to spare; capping height too would just shrink it for no reason since
-        // height was never the complaint. Portrait doesn't get this: a panel-by-panel stop there is
-        // rarely wide enough relative to a portrait screen to bind on both axes at once, so it
-        // naturally keeps margin on one side already.
-        val widthBudget = if (isPortrait) width.toFloat() else width * LANDSCAPE_MAX_FILL_FRACTION
-        val targetScale = min(
-            widthBudget / (rect.width * sWidth),
-            heightBudget / (rect.height * sHeight),
-        )
-        val center = PointF(
-            (rect.left + rect.width / 2f) * sWidth,
-            (rect.top + rect.height / 2f) * sHeight,
-        )
-        return targetScale to center
+        return t.scale to PointF(t.centerX, t.centerY)
     }
 
     private fun SubsamplingScaleImageView.landscapeZoom(forward: Boolean) {
@@ -1960,6 +1992,11 @@ open class ReaderPageImageView @JvmOverloads constructor(
 
                     override fun onCenterChanged(newCenter: PointF?, origin: Int) {
                         if (origin != SubsamplingScaleImageView.ORIGIN_ANIM) {
+                            if (!userMovedAwayFromStop) {
+                                logcat(LogPriority.DEBUG) {
+                                    "panelTapDbg userMovedAwayFromStop <- true (origin=$origin newCenter=$newCenter idx=$panelStopIndex)"
+                                }
+                            }
                             userMovedAwayFromStop = true
                         }
                         panelSpotlight?.invalidate()
@@ -2188,14 +2225,22 @@ private const val TALL_PANEL_ASPECT_THRESHOLD = 0.5f
 /** Max fraction of the view's height a tall/narrow panel stop is allowed to render at, so it doesn't stretch edge-to-edge. */
 private const val MAX_TALL_PANEL_HEIGHT_FRACTION = 0.6f
 
-/** Max fraction of the view's width a panel-by-panel stop is allowed to fill in landscape, so it always keeps a small left/right margin. */
+/**
+ * Tablet only: max fraction of the view a panel-by-panel stop may fill on whichever axis binds
+ * first, both axes and both orientations — so every panel keeps a visible margin instead of filling
+ * the viewport edge-to-edge (confirmed on-device that edge-to-edge reads as "too large" on a tablet;
+ * on a phone panels are wanted large, so this doesn't apply there).
+ */
+private const val MAX_PANEL_FILL_FRACTION = 0.85f
+
+/** Phone landscape only: max fraction of the view width a panel-by-panel stop may fill, so it keeps a small left/right margin. */
 private const val LANDSCAPE_MAX_FILL_FRACTION = 0.92f
 
 /**
  * Remaps a mid-panel zoom level from an outgoing view onto a freshly swapped-in one (the raw ->
  * enhanced image crossfade in [ReaderPageImageView.animateProcessedSwap]). [oldScale]/[oldMinScale]
  * describe how far past the previous view's base framing the user had zoomed; [newBaseScale] is the
- * new view's own panel-base scale (`panelStopTarget`).
+ * new view's own panel-base scale from [panelStopScaleAndCenter].
  *
  * Never returns NaN/Infinity. A freshly-created `SCALE_TYPE_CUSTOM` view that nothing has assigned a
  * minScale to yet reports `minScale == NaN`; feeding that into `minScale * zoomFactor` and then
@@ -2212,6 +2257,85 @@ internal fun mappedPanelZoomScale(
 ): Float {
     val zoomFactor = (oldScale / oldMinScale).takeIf { it.isFinite() && it > 0f } ?: 1f
     return (newBaseScale * zoomFactor).coerceIn(newBaseScale, newMaxScale)
+}
+
+/**
+ * Hard cap on panel-by-panel zoom magnification: a panel is never scaled beyond this many view
+ * pixels per source pixel. Without it, a small panel from a non-upscaled (~1000px-wide) source page
+ * gets blown up 3x+ to fill a large tablet screen and renders visibly blurry. An AI-upscaled page
+ * has a much larger source, so its fit scale is already well under this and stays untouched — the
+ * cap only bites on genuinely low-resolution pages, trading some blank margin for a sharp render.
+ */
+private const val MAX_PANEL_UPSCALE = 2f
+
+/** Below this smallest-width, panel-by-panel treats the screen as a phone (panels wanted large). At or above, a tablet (panels get a margin). */
+private const val TABLET_MIN_WIDTH_DP = 600
+
+internal fun isCompactWidth(context: Context): Boolean =
+    context.resources.configuration.smallestScreenWidthDp < TABLET_MIN_WIDTH_DP
+
+internal data class PanelStopTarget(
+    val scale: Float,
+    val centerX: Float,
+    val centerY: Float,
+    val realAspect: Float,
+    val widthBudget: Float,
+    val heightBudget: Float,
+    val portrait: Boolean,
+)
+
+/**
+ * Pure math for a panel-by-panel stop's on-screen scale and center (source-pixel coords), split out
+ * from the live-view [SubsamplingScaleImageView] extension so it can be regression-tested with
+ * captured page coordinates.
+ */
+internal fun panelStopScaleAndCenter(
+    rect: PanelRect,
+    viewWidth: Int,
+    viewHeight: Int,
+    sourceWidth: Int,
+    sourceHeight: Int,
+    compact: Boolean,
+): PanelStopTarget {
+    // On a tablet ([compact] == false) every panel-by-panel stop keeps a margin on whichever axis it
+    // binds to — both axes, both orientations, [MAX_PANEL_FILL_FRACTION] — so it never fills the
+    // viewport edge-to-edge (confirmed on-device that an un-margined panel "takes up the entire
+    // viewport" and reads as too large on a big screen). On a phone ([compact] == true) that felt
+    // wrong — panels are wanted large there — so it keeps the original budgets: full height, and
+    // full width in portrait / [LANDSCAPE_MAX_FILL_FRACTION] in landscape.
+    //
+    // A genuinely tall/narrow panel (real width:height below [TALL_PANEL_ASPECT_THRESHOLD]) in
+    // portrait gets a tighter height cap still ([MAX_TALL_PANEL_HEIGHT_FRACTION]) regardless of
+    // device: uniform scaling can't change the rect's own shape, so a plain fit-both scale would
+    // stretch such a sliver to fill all of portrait's generous vertical space. Landscape doesn't
+    // need that extra tightening — its own height is already scarce.
+    val realAspect = (rect.width * sourceWidth) / (rect.height * sourceHeight)
+    val isPortrait = viewHeight > viewWidth
+    val widthFraction = when {
+        !compact -> MAX_PANEL_FILL_FRACTION
+        isPortrait -> 1f
+        else -> LANDSCAPE_MAX_FILL_FRACTION
+    }
+    val heightFraction = when {
+        isPortrait && realAspect < TALL_PANEL_ASPECT_THRESHOLD -> MAX_TALL_PANEL_HEIGHT_FRACTION
+        !compact -> MAX_PANEL_FILL_FRACTION
+        else -> 1f
+    }
+    val widthBudget = viewWidth * widthFraction
+    val heightBudget = viewHeight * heightFraction
+    val fitScale = min(
+        widthBudget / (rect.width * sourceWidth),
+        heightBudget / (rect.height * sourceHeight),
+    )
+    return PanelStopTarget(
+        scale = min(fitScale, MAX_PANEL_UPSCALE),
+        centerX = (rect.left + rect.width / 2f) * sourceWidth,
+        centerY = (rect.top + rect.height / 2f) * sourceHeight,
+        realAspect = realAspect,
+        widthBudget = widthBudget,
+        heightBudget = heightBudget,
+        portrait = isPortrait,
+    )
 }
 
 private const val PROCESSED_SWAP_DURATION_MS = 280L

@@ -22,6 +22,7 @@ import eu.kanade.tachiyomi.ui.reader.viewer.panel.PanelDirection
 import kotlinx.coroutines.MainScope
 import kotlinx.coroutines.cancel
 import mihon.app.di.appGraph
+import logcat.LogPriority
 import tachiyomi.core.common.util.system.logcat
 import kotlin.math.min
 
@@ -112,7 +113,13 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
                 (event.rawX - viewPosition[0] + viewPositionRelativeToWindow[0]) / pager.width,
                 (event.rawY - viewPosition[1] + viewPositionRelativeToWindow[1]) / pager.height,
             )
-            when (config.navigator.getAction(pos)) {
+            val action = config.navigator.getAction(pos)
+            val holder = (currentPage as? ReaderPage)?.let(::getPageHolder)
+            logcat(LogPriority.DEBUG) {
+                "panelTapDbg tap pos=(${pos.x},${pos.y}) action=$action zoomedIn=${holder?.isZoomedIn()} " +
+                    "hasPanelStops=${holder?.hasPanelStops()} canAdvance=${holder?.canAdvancePanelStop()} canRetreat=${holder?.canRetreatPanelStop()}"
+            }
+            when (action) {
                 NavigationRegion.MENU -> activity.toggleMenu()
                 NavigationRegion.NEXT -> moveToNext()
                 NavigationRegion.PREV -> moveToPrevious()
@@ -414,11 +421,19 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             val animate = config.usePageTransitions || this is PanelByPanelViewer
             when {
                 holder != null && holder.isDetectingPanels() -> {} // wait for detection, don't skip ahead a page
-                holder != null && holder.hasPanelStops() && holder.canAdvancePanelStop() -> holder.advancePanelStop()
-                holder != null && holder.hasPanelStops() ->
+                holder != null && holder.hasPanelStops() && holder.canAdvancePanelStop() -> {
+                    logcat(LogPriority.DEBUG) { "panelTapDbg moveRight -> advancePanelStop" }
+                    holder.advancePanelStop()
+                }
+                holder != null && holder.hasPanelStops() -> {
+                    logcat(LogPriority.DEBUG) { "panelTapDbg moveRight -> PAGE TURN (hasPanelStops but !canAdvance, idx at end?)" }
                     pager.setCurrentItem(pager.currentItem + 1, animate)
+                }
                 holder != null && config.navigateToPan && holder.canPanRight() -> holder.panRight()
-                else -> pager.setCurrentItem(pager.currentItem + 1, animate)
+                else -> {
+                    logcat(LogPriority.DEBUG) { "panelTapDbg moveRight -> PAGE TURN (else; holder=$holder hasPanelStops=${holder?.hasPanelStops()})" }
+                    pager.setCurrentItem(pager.currentItem + 1, animate)
+                }
             }
         }
     }
@@ -432,11 +447,19 @@ abstract class PagerViewer(val activity: ReaderActivity) : Viewer {
             val animate = config.usePageTransitions || this is PanelByPanelViewer
             when {
                 holder != null && holder.isDetectingPanels() -> {} // wait for detection, don't skip back a page
-                holder != null && holder.hasPanelStops() && holder.canRetreatPanelStop() -> holder.retreatPanelStop()
-                holder != null && holder.hasPanelStops() ->
+                holder != null && holder.hasPanelStops() && holder.canRetreatPanelStop() -> {
+                    logcat(LogPriority.DEBUG) { "panelTapDbg moveLeft -> retreatPanelStop" }
+                    holder.retreatPanelStop()
+                }
+                holder != null && holder.hasPanelStops() -> {
+                    logcat(LogPriority.DEBUG) { "panelTapDbg moveLeft -> PAGE TURN (hasPanelStops but !canRetreat, idx at 0?)" }
                     pager.setCurrentItem(pager.currentItem - 1, animate)
+                }
                 holder != null && config.navigateToPan && holder.canPanLeft() -> holder.panLeft()
-                else -> pager.setCurrentItem(pager.currentItem - 1, animate)
+                else -> {
+                    logcat(LogPriority.DEBUG) { "panelTapDbg moveLeft -> PAGE TURN (else)" }
+                    pager.setCurrentItem(pager.currentItem - 1, animate)
+                }
             }
         }
     }
