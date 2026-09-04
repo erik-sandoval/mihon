@@ -71,6 +71,33 @@ class PanelGapFillerTest {
         assertEquals(panels, result, "the right-margin sliver must not be added as a panel")
     }
 
+    /** Solid tone [tone] inside [ink], white (250) elsewhere. */
+    private class ToneField(override val width: Int, override val height: Int, val ink: PanelRect, val tone: Int) : LumaField {
+        private fun at(x: Int, y: Int): Int {
+            val nx = x.toFloat() / width
+            val ny = y.toFloat() / height
+            return if (nx in ink.left..ink.right && ny in ink.top..ink.bottom) tone else 250
+        }
+        override fun column(x: Int, y0: Int, y1: Int) = IntArray(y1 - y0) { at(x, y0 + it) }
+        override fun row(y: Int, x0: Int, x1: Int) = IntArray(x1 - x0) { at(x0 + it, y) }
+    }
+
+    @Test
+    fun wideShortUncoveredRegionWithInkIsRecoveredDespiteItsAspectRatio() {
+        // Top ~78% is one panel; the bottom ~22% is a full-width panel the model missed. Its aspect
+        // (≈4.3:1) would normally be rejected as a margin strip — but it's full of ink, so keep it.
+        val top = PanelRect(0.03f, 0.02f, 0.97f, 0.78f)
+        val bottomInk = PanelRect(0.0f, 0.80f, 1.0f, 1.0f)
+        val luma = ToneField(400, 600, bottomInk, tone = 30) // dark dramatic panel
+
+        val withLuma = PanelGapFiller.fill(listOf(top), luma = luma)
+        assertEquals(2, withLuma.size, "the inky bottom strip should be recovered: $withLuma")
+
+        // Same geometry, but the strip is blank paper → still rejected.
+        val blank = ToneField(400, 600, bottomInk, tone = 250)
+        assertEquals(1, PanelGapFiller.fill(listOf(top), luma = blank).size)
+    }
+
     @Test
     fun missedPanelIsNumberedByThePipeline() {
         // Top panel + a big uncovered bottom: the pipeline should yield at least 2 regions in order.

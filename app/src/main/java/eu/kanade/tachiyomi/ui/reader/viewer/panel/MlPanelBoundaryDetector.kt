@@ -42,8 +42,19 @@ class MlPanelBoundaryDetector private constructor(
             DetectResult(emptyList(), emptyList(), page.width, page.height)
         }
         logcat { "panelDebug [$label] ${result.pageW}x${result.pageH} raw panels=${result.panels} bubbles=${result.bubbles}" }
+        // The model boxes the *drawn* frame; content that breaks the frame (a character bleeding out,
+        // an undetected caption bar, a bubble past the border) gets clipped, and a whole panel on a
+        // dark full-bleed background can be missed entirely. Give the pixel-aware passes the page.
+        val luma = runCatching { lumaFieldOf(page) }.getOrNull()
+        val expandedPanels = try {
+            if (luma != null) ContentAwarePanelExpander.expand(result.panels, luma) else result.panels
+        } catch (t: Throwable) {
+            logcat(LogPriority.ERROR, t) { "content-aware panel expansion failed; using raw boxes" }
+            result.panels
+        }
+        logcat { "panelDebug [$label] ${result.pageW}x${result.pageH} expanded panels=$expandedPanels" }
         val planned = PanelPipeline.zoomRegions(
-            result.panels, result.bubbles, result.pageW, result.pageH, rightToLeft,
+            expandedPanels, result.bubbles, result.pageW, result.pageH, rightToLeft, luma,
         )
         logcat { "panelDebug [$label] ${result.pageW}x${result.pageH} planned=$planned" }
         val finalPanels = if (planned.size < 2) listOf(PanelRect.FULL_PAGE) else planned
@@ -63,6 +74,13 @@ class MlPanelBoundaryDetector private constructor(
             logcat(LogPriority.ERROR, t) { "ML panel diagnostic inference failed" }
             emptyList()
         }
+    }
+
+    /** Snapshots [page]'s pixels into a [LumaField] for [ContentAwarePanelExpander]. */
+    private fun lumaFieldOf(page: Bitmap): LumaField {
+        val argb = IntArray(page.width * page.height)
+        page.getPixels(argb, 0, page.width, 0, 0, page.width, page.height)
+        return ArgbLumaField(argb, page.width, page.height)
     }
 
     private data class InferenceOutput(val raw: FloatArray, val shape: IntArray, val lb: Letterbox, val pageW: Int, val pageH: Int)

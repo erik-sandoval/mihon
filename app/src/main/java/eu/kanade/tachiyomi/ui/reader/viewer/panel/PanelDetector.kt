@@ -120,8 +120,19 @@ class PanelDetector(
         // 53: Evidence-gathering bump only (forced fresh detection so panelDebug raw bubbles= logs
         //     fire for Blue Lock ch.2 p59/p38, to check whether the model detects rectangular
         //     narration-caption boxes as class-1 Text at all, vs. round speech bubbles).
+        // 54: ContentAwarePanelExpander added before PanelPipeline (uses the page pixels):
+        //     - merges two detected boxes with no gutter across their seam (a panel the model split)
+        //     - walks each panel edge out to the real white/solid-black gutter (recovers a clipped
+        //       frame-breaking character / bleeding bubble)
+        //     - absorbs an undetected caption/narration bar just past a panel's gutter, if the bar
+        //       is about that panel's own width
+        //     No-op where a box is already at a gutter or the page is borderless.
+        //     Also: PanelGapFiller now keeps a wide/short uncovered region that fails only its
+        //     aspect-ratio check if the page pixels show it's full of ink (a missed full-bleed
+        //     panel on black), and PanelPipeline.BASE_MARGIN 0.057->0.025 / MAX_EDGE_EXTENSION
+        //     0.043->0.02 (the expander reaches the real boundary, so less padding is wanted).
         // Not private: PanelFlagExporter labels its exports with this so a future re-run against a
         // newer model/pipeline version can tell which flags predate it.
-        const val DETECTOR_VERSION = 53
+        const val DETECTOR_VERSION = 54
     }
 }

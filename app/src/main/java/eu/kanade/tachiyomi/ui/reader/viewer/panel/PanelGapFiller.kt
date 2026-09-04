@@ -34,7 +34,14 @@ object PanelGapFiller {
         val maxFills: Int = 8,
     )
 
-    fun fill(panels: List<PanelRect>, config: Config = Config()): List<PanelRect> {
+    /**
+     * A recovered region normally has to look panel-shaped (see [Config.maxAspectRatio]) to guard
+     * against claiming a page's trim margin. But a full-width strip the model missed — often a
+     * dramatic full-bleed face on black at the bottom of a Blue Lock page — is genuinely a panel
+     * despite its aspect. When [luma] is supplied, a region that fails *only* the aspect check is
+     * kept anyway if it's full of ink rather than blank paper.
+     */
+    fun fill(panels: List<PanelRect>, config: Config = Config(), luma: LumaField? = null): List<PanelRect> {
         if (panels.isEmpty()) return panels
         val n = config.grid
 
@@ -62,21 +69,43 @@ object PanelGapFiller {
             val wFrac = (rect.x1 - rect.x0 + 1).toFloat() / n
             val hFrac = (rect.y1 - rect.y0 + 1).toFloat() / n
             for (yy in rect.y0..rect.y1) for (xx in rect.x0..rect.x1) covered[yy * n + xx] = true
+            val region = PanelRect(
+                left = rect.x0.toFloat() / n,
+                top = rect.y0.toFloat() / n,
+                right = (rect.x1 + 1).toFloat() / n,
+                bottom = (rect.y1 + 1).toFloat() / n,
+            )
+            val bigEnough = wFrac >= config.minSideFraction && hFrac >= config.minSideFraction
             val aspectRatio = max(wFrac, hFrac) / min(wFrac, hFrac)
-            val isPanelShaped = wFrac >= config.minSideFraction &&
-                hFrac >= config.minSideFraction &&
-                aspectRatio <= config.maxAspectRatio
-            if (isPanelShaped) {
-                gaps += PanelRect(
-                    left = rect.x0.toFloat() / n,
-                    top = rect.y0.toFloat() / n,
-                    right = (rect.x1 + 1).toFloat() / n,
-                    bottom = (rect.y1 + 1).toFloat() / n,
-                )
-            }
+            val keep = bigEnough &&
+                (aspectRatio <= config.maxAspectRatio || (luma != null && regionHasInk(region, luma)))
+            if (keep) gaps += region
         }
 
         return if (gaps.isEmpty()) panels else panels + gaps
+    }
+
+    /** Whether [region] holds real artwork rather than blank paper — a majority of its sampled
+     *  rows carry ink (are darker than near-white). */
+    private fun regionHasInk(region: PanelRect, luma: LumaField): Boolean {
+        val w = luma.width
+        val h = luma.height
+        val x0 = (region.left * w).toInt().coerceIn(0, w - 1)
+        val x1 = (region.right * w).toInt().coerceIn(x0 + 1, w)
+        val y0 = (region.top * h).toInt().coerceIn(0, h - 1)
+        val y1 = (region.bottom * h).toInt().coerceIn(y0 + 1, h)
+        val samples = 15
+        var inky = 0
+        for (i in 0 until samples) {
+            val y = y0 + (y1 - y0) * i / samples
+            val row = luma.row(y, x0, x1)
+            var sum = 0L
+            var dark = 0
+            for (v in row) { sum += v; if (v < 110) dark++ }
+            val mean = sum.toFloat() / row.size
+            if (mean < 225f || dark > row.size / 12) inky++
+        }
+        return inky >= samples / 2
     }
 
     private data class Rect(val x0: Int, val y0: Int, val x1: Int, val y1: Int, val cells: Int)
