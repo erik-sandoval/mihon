@@ -872,20 +872,41 @@ open class ReaderPageImageView @JvmOverloads constructor(
                                 targetScale > targetMinScale + 0.01f
 
                         if (wasZoomed) {
-                            if (this@apply is PanelSubsamplingImageView && panelModeActive) {
-                                val target = panelStops.getOrNull(panelStopIndex)
-                                val (baseScale, baseCenter) = target?.let { panelStopTarget(it) } ?: (minScale to PointF())
-                                activePanelRect = target
-                                panelBaseScale = baseScale
-                                panelBaseCenter = baseCenter
-                            }
-                            val zoomFactor = targetScale / targetMinScale
                             val mappedCenter = PointF(
                                 (targetCenter.x / targetWidth) * sWidth,
                                 (targetCenter.y / targetHeight) * sHeight,
                             )
-                            val mappedScale = (minScale * zoomFactor).coerceIn(minScale, maxScale)
-                            setScaleAndCenter(mappedScale, mappedCenter)
+                            val panelView = (this@apply as? PanelSubsamplingImageView)?.takeIf { panelModeActive }
+                            val panelStop = panelView?.let { panelStops.getOrNull(panelStopIndex) }
+                            if (panelView != null && panelStop != null) {
+                                // Re-derive this (new, upscaled) view's own panel-base framing from
+                                // the stop and pin it as the custom minScale *before* remapping the
+                                // carried-over zoom. A just-created SCALE_TYPE_CUSTOM view reports
+                                // minScale == NaN until something assigns it; feeding that straight
+                                // into `minScale * zoomFactor` produced a NaN scale that
+                                // setScaleAndCenter then baked permanently into the swapped-in view —
+                                // the page rendered black (nothing draws at NaN scale) and the
+                                // spotlight overlay + panel navigation stayed stuck until the page
+                                // was torn down. Confirmed on-device via `animateProcessedSwap
+                                // .onReady ... new(...,minScale=NaN)` followed by `post(scale=NaN)`.
+                                val (baseScale, baseCenter) = panelStopTarget(panelStop)
+                                panelView.activePanelRect = panelStop
+                                panelView.panelBaseScale = baseScale
+                                panelView.panelBaseCenter = baseCenter
+                                setMinimumScaleType(SubsamplingScaleImageView.SCALE_TYPE_CUSTOM)
+                                minScale = baseScale
+                                maxScale = baseScale * 3.0f
+                                setDoubleTapZoomScale(baseScale * 2.0f)
+                                setDoubleTapZoomStyle(SubsamplingScaleImageView.ZOOM_FOCUS_CENTER)
+                                setScaleAndCenter(
+                                    mappedPanelZoomScale(targetScale, targetMinScale, baseScale, maxScale),
+                                    mappedCenter,
+                                )
+                                spotlightFor(this@apply).targetRect = panelStop
+                            } else {
+                                val zoomFactor = targetScale / targetMinScale
+                                setScaleAndCenter((minScale * zoomFactor).coerceIn(minScale, maxScale), mappedCenter)
+                            }
                         } else if (panelModeActive) {
                             // The pre-swap view was showing panel-by-panel's full-page/first stop
                             // (not "zoomed in" per wasZoomed above) — re-derive position from the
@@ -2169,5 +2190,28 @@ private const val MAX_TALL_PANEL_HEIGHT_FRACTION = 0.6f
 
 /** Max fraction of the view's width a panel-by-panel stop is allowed to fill in landscape, so it always keeps a small left/right margin. */
 private const val LANDSCAPE_MAX_FILL_FRACTION = 0.92f
+
+/**
+ * Remaps a mid-panel zoom level from an outgoing view onto a freshly swapped-in one (the raw ->
+ * enhanced image crossfade in [ReaderPageImageView.animateProcessedSwap]). [oldScale]/[oldMinScale]
+ * describe how far past the previous view's base framing the user had zoomed; [newBaseScale] is the
+ * new view's own panel-base scale (`panelStopTarget`).
+ *
+ * Never returns NaN/Infinity. A freshly-created `SCALE_TYPE_CUSTOM` view that nothing has assigned a
+ * minScale to yet reports `minScale == NaN`; feeding that into `minScale * zoomFactor` and then
+ * `setScaleAndCenter` baked the NaN permanently into the swapped-in view, leaving the page black and
+ * panel navigation / the spotlight overlay visibly stuck until the page was torn down (confirmed
+ * on-device). A non-finite or non-positive zoom factor here collapses to 1x - the panel's base
+ * framing.
+ */
+internal fun mappedPanelZoomScale(
+    oldScale: Float,
+    oldMinScale: Float,
+    newBaseScale: Float,
+    newMaxScale: Float,
+): Float {
+    val zoomFactor = (oldScale / oldMinScale).takeIf { it.isFinite() && it > 0f } ?: 1f
+    return (newBaseScale * zoomFactor).coerceIn(newBaseScale, newMaxScale)
+}
 
 private const val PROCESSED_SWAP_DURATION_MS = 280L
